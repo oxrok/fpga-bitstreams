@@ -1,0 +1,5 @@
+
+// Sample clock for a parallel ADC. Only the ADC variants have this port;
+// they have 8 channels, so 42 is free.
+IO_LOC  "adc_clk" 42;
+IO_PORT "adc_clk" IO_TYPE=LVCMOS33 DRIVE=8;

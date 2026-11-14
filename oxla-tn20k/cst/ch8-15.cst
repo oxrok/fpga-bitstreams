@@ -1,0 +1,22 @@
+
+// Channels 8-15. 42, 41, 48, 72 and 71 go to the right header and nowhere
+// else. The last three share their pin with something on the board:
+// 80 and 85 are the SD card's DAT2 and DAT1, with 10 k pull-ups (no card in
+// the slot, then), and 76 is a BL616 GPIO, which the stock debugger
+// firmware leaves floating.
+IO_LOC  "ch[8]" 42;
+IO_LOC  "ch[9]" 41;
+IO_LOC  "ch[10]" 48;
+IO_LOC  "ch[11]" 72;
+IO_LOC  "ch[12]" 71;
+IO_LOC  "ch[13]" 80;
+IO_LOC  "ch[14]" 85;
+IO_LOC  "ch[15]" 76;
+IO_PORT "ch[8]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_PORT "ch[9]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_PORT "ch[10]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_PORT "ch[11]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_PORT "ch[12]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_PORT "ch[13]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_PORT "ch[14]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_PORT "ch[15]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;

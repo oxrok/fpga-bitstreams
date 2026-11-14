@@ -1,0 +1,20 @@
+
+// Channels 0-7: the left header (USB up, parts up), from the top. These
+// eight go to the header and nowhere else (to the LCD connector, if one is
+// fitted). All 3.3 V LVCMOS, not 5 V tolerant.
+IO_LOC  "ch[0]" 73;
+IO_LOC  "ch[1]" 74;
+IO_LOC  "ch[2]" 77;
+IO_LOC  "ch[3]" 27;
+IO_LOC  "ch[4]" 28;
+IO_LOC  "ch[5]" 29;
+IO_LOC  "ch[6]" 30;
+IO_LOC  "ch[7]" 31;
+IO_PORT "ch[0]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_PORT "ch[1]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_PORT "ch[2]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_PORT "ch[3]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_PORT "ch[4]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_PORT "ch[5]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_PORT "ch[6]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_PORT "ch[7]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
