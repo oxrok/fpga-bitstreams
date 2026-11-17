@@ -26,7 +26,7 @@ is the USB debugger.
 | I/O | 3.3 V LVCMOS on the headers. Not 5 V tolerant |
 | ADC | None. See [Analog](#analog) |
 
-What this design uses of it: about 10% of the logic, one block RAM, one PLL,
+What this design uses of it: about 10% of the logic, one block RAM, both PLLs,
 all of the SDRAM.
 
 The gateware has no say over the USB link, and it is the slow part: the
@@ -70,16 +70,26 @@ One source, parameters per bitstream (`VARIANTS` in the Makefile):
 
 | variant | channels | max rate | RLE | |
 |---|---|---|---|---|
-| `la16-108` | 16 | 108 MS/s | no | |
-| `la16-108-rle` | 16 | 108 MS/s | yes | the general one |
-| `la16-54-rle` | 16 | 54 MS/s | yes | relaxed timing |
-| `la14-216-ddr` | 14 | 216 MS/s | no | two samples per clock; CH0-CH13 |
-| `la14-270-ddr` | 14 | 270 MS/s | no | the same at 135 MHz |
-| `la8-108-rle` | 8 | 108 MS/s | yes | twice the depth in raw mode |
-| `la8-216-ddr` | 8 | 216 MS/s | no | two samples per clock, IDDR inputs |
-| `la8-54-adc` | 8 | 27 MS/s | no | the channels are a parallel ADC's data, with its clock on pin 42 |
-| `la16-135` | 16 | 135 MS/s | no | |
-| `la8-270-ddr` | 8 | 270 MS/s | no | two samples per clock at 135 MHz |
+| `la16-rle` | 16 | 135 MS/s | yes | the general one |
+| `la16` | 16 | 135 MS/s | no | |
+| `la14-ddr` | 14 | 270 MS/s | no | two samples per clock; CH0-CH13 |
+| `la8-rle` | 8 | 135 MS/s | yes | twice the depth in raw mode |
+| `la8-ddr` | 8 | 270 MS/s | no | two samples per clock |
+| `la8-adc` | 8 | 67.5 MS/s | no | the channels are a parallel ADC's data, with its clock on pin 42 |
+
+The clock is not a build option: the host sets it to 81, 108 or 135 MHz
+(27 MHz times 3, 4 or 5; there is no setting that gives exactly 100), and
+the sample rate is the clock divided by a whole number, or twice the clock
+in the two-samples-per-clock variants. Together that is 135, 108, 81, 67.5,
+54, 45, 40.5, 36, 33.75, 27 MS/s and on down. The device reports its clock
+and the host does the division.
+
+The capture logic has a PLL of its own for this. The host side (UART,
+commands, readout) is on a second PLL that never changes, so the link
+survives a change of clock; the two sides meet through synchronizers. A
+first attempt ran the host side straight off the 27 MHz crystal and lost
+about one command in thirty: nine clocks per bit at 3 Mbaud is too few for
+the board's USB bridge.
 
 nextpnr's timing report is not the last word on whether a build works. At
 135 MHz, builds that it passed at 150, 170, even 200 MHz misbehaved on the
@@ -88,16 +98,11 @@ of every word zero, a trigger that never fired. Three places in the logic
 were behind it (logic straight off a block RAM's output, a word built and
 written in one clock, two subtractions and comparisons chained for two
 samples per clock) and each now has a register or does the work in
-parallel. The Makefile also asks nextpnr for 15% more than the clock
+parallel. The Makefile also asks nextpnr for 15% more than the fastest clock
 (`MARGIN`), so a marginal build fails to build; `SEED=n` then tries another
-placement. Since those changes every bitstream that built has passed on the
-board: the ten variants, and three more placements each of `la8-270-ddr` and
-`la14-270-ddr`. Run the self test on a new build all the same.
-
-The system clock is the 27 MHz crystal times 2, 4 or 5, so the rates are
-clock / n: with 108 MHz that is 108, 54, 36, 27, 21.6, 18, 13.5, 12, 10.8, 9,
-6, 4, 3, 2, 1 MS/s and so on down to 6.4 S/s. The device reports its clock
-and the host does the division.
+placement, and a variant whose default placement falls short has the seed
+that made it in the Makefile. Run the self test on a new build all the
+same; it tries every clock.
 
 Fourteen is as many channels as fit at two samples per clock: the SDRAM
 takes a little under one 32 bit word per clock, 14 channels twice a clock
@@ -119,10 +124,10 @@ cannot overflow.
 
     make venv           # once: apycula and nextpnr (the YoWASP build) into .venv
     make                # every variant, about a minute each
-    make la16-108-rle   # one
-    make sim            # Verilator, five configurations
-    make prog V=la16-108-rle      # into the FPGA, until power off
-    make flash V=la16-108-rle     # into the flash
+    make la16-rle       # one
+    make sim            # Verilator, seven configurations
+    make prog V=la16-rle          # into the FPGA, until power off
+    make flash V=la16-rle         # into the flash
 
 Needs yosys (0.48 here), Verilator 5 for the simulation, openFPGALoader to
 program, uv for `make venv`.
@@ -130,12 +135,13 @@ program, uv for `make venv`.
     tools/oxla.py /dev/cu.usbserial-XXXX1 id
     tools/oxla.py /dev/cu.usbserial-XXXX1 selftest
     tools/oxla.py /dev/cu.usbserial-XXXX1 capture --mode a-then-b --a 0=r --b 1=f,2=1
+    tools/oxla.py --clock 135 /dev/cu.usbserial-XXXX1 capture --ddr
 
 ## How it works
 
     pins -> sampler -> trigger -> packer -> FIFO -> SDRAM <- readout <- UART
 
-Everything is on one clock. The sampler synchronizes the pins and divides
+The sampler synchronizes the pins and divides
 the rate. The trigger matches both terms on every sample and runs the
 sequence. The packer turns samples into 32 bit words, raw or run length
 encoded, and marks the word with the trigger sample. The SDRAM is a ring
@@ -160,7 +166,7 @@ The SDRAM clock is the PLL's second output, through an ODDR cell, and its
 phase after the system clock is a build setting (`SD_PHASE`, in sixteenths
 of a period), because the other SDRAM outputs are routed from fabric
 flip-flops and nextpnr does not time them to the pad. Measured on one board,
-on `la16-108`, `la16-135` and `la8-270-ddr`, writing and reading back
+on three different builds, writing and reading back
 200,000 words: settings 10, 12, 14 and 0 work and 2, 4, 6 and 8 do not, the
 same at 108 and 135 MHz. The default is 13, the middle. A build that fails
 the memory part of the self test wants this looked at first.
@@ -175,9 +181,9 @@ reach the headers and its firmware is the debugger. So analog needs
 something on the header:
 
 - A parallel ADC module (AD9280 or AD9226 class, 8 or more bits, tens of
-  MS/s). `la8-54-adc` is for that: data on CH0-CH7, the sample clock out on
+  MS/s). `la8-adc` is for that: data on CH0-CH7, the sample clock out on
   pin 42, high for the first half of each sample period, and the ID says the
-  channels are one analog value. Rates are 27 MS/s and down. It is built and
+  channels are one analog value. Rates are 67.5 MS/s and down. It is built and
   its digital side passes the self test; no ADC has been connected to it.
 - A sigma-delta ADC from an LVDS input pair used as a comparator plus a
   resistor and a capacitor would cost nothing but two pins per channel, for
@@ -188,16 +194,18 @@ something on the header:
 In simulation (`make sim`, against a behavioural SDRAM model that checks the
 command timing): ID, test pattern captures, the sample count limit, level
 and edge triggers, every trigger mode, the event count, the pre-trigger
-hold-off, STOP, RLE with a trigger, RLE on an idle line, RLE overflow, and a
-capture long enough for the ring to wrap, in five configurations (16
-channels with and without RLE, 8 with RLE, 8 and 14 with two samples per
-clock).
+hold-off, STOP, RLE with a trigger, RLE on an idle line, RLE overflow, a
+capture long enough for the ring to wrap, and a change of clock, in seven
+configurations (16 channels with and without RLE, 8 with RLE, 8 and 14 with
+two samples per clock, spread over the three clocks).
 
-On one Tang Nano 20K (`tools/oxla.py selftest`), all ten variants: the same
-list on the internal test pattern, which goes through everything except the
-input pins. `la14-270-ddr`, the one that asks most of the memory, also had
-the whole ring written at full rate and read back (4,793,488 samples, no
-errors).
+On one Tang Nano 20K (`tools/oxla.py selftest`), all six variants at 81, 108
+and 135 MHz: the same list on the internal test pattern, which goes through
+everything except the input pins. The link to the host was also exercised
+on its own: 6,800 commands at each clock, none missed. Before the clock
+became a run-time setting, the 14 channel build at 270 MS/s had the whole
+ring written at full rate and read back (4,793,488 samples, no errors);
+that has not been repeated on the present builds.
 
 Not checked: real signals on the pins. The only pin captures so far are of
 idle inputs, which read as the schematic says they should: low, except the

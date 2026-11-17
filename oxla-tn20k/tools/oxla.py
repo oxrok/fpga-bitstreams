@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Bring-up tool for the oxrok logic analyzer gateware (docs/PROTOCOL.md).
 
-    oxla.py PORT id
-    oxla.py PORT selftest [--words N]
+    oxla.py [--clock MHZ] PORT id
+    oxla.py [--clock MHZ] PORT selftest [--words N]
     oxla.py PORT capture [--div N] [--samples N] [--pre PERCENT] [--rle]
                          [--ddr] [--mode MODE] [--count N] [--a SPEC]
                          [--b SPEC] [--out FILE]
@@ -25,13 +25,14 @@ import serial
 OP_RESET, OP_ID, OP_WREG, OP_RREG, OP_ARM, OP_STOP, OP_RMEM = 1, 2, 3, 4, 5, 6, 7
 
 R_DIV, R_POST_WORDS, R_PRE_WORDS, R_POST_SAMPLES, R_FLAGS, R_CHMASK = 0, 1, 2, 3, 4, 5
-R_TMODE, R_TCOUNT, R_A, R_B = 6, 7, 0x10, 0x18
+R_TMODE, R_TCOUNT, R_CLOCK, R_A, R_B = 6, 7, 8, 0x10, 0x18
 R_STATUS, R_TRIG, R_STOP, R_COUNT = 0x80, 0x81, 0x82, 0x83
 
 F_RLE, F_DDR, F_TEST = 1, 2, 4
 ST_RUN, ST_TRIG, ST_DONE, ST_OVERFLOW, ST_READY = 1, 2, 4, 8, 16
 
 MODES = ["now", "a", "b", "a-or-b", "a-and-b", "a-then-b", "b-then-a"]
+CLOCKS = [81, 108, 135]             # MHz, by the value of the CLOCK register
 
 
 class Oxla:
@@ -43,6 +44,9 @@ class Oxla:
         self.ser.write(bytes(8) + bytes([OP_RESET]))
         time.sleep(0.05)
         self.ser.reset_input_buffer()
+        self.read_id()
+
+    def read_id(self):
         self.ser.write(bytes([OP_ID]))
         d = self._read(16)
         if d[:4] != b"OXLA":
@@ -51,6 +55,7 @@ class Oxla:
         self.clk_hz, = struct.unpack_from("<I", d, 8)
         self.mem_words, = struct.unpack_from("<I", d, 12)
         self.has_rle, self.has_ddr, self.has_adc = bool(caps & 1), bool(caps & 2), bool(caps & 4)
+        self.has_clocks = bool(caps & 8)
         # Samples repeat their position in the words every `group` words
         # (1 unless the channel count does not divide 32).
         g = 1
@@ -70,6 +75,23 @@ class Oxla:
     def rreg(self, addr):
         self.ser.write(bytes([OP_RREG, addr]))
         return struct.unpack("<I", self._read(4))[0]
+
+    def set_clock(self, mhz):
+        """Change the capture clock (81, 108 or 135 MHz). Everything else
+        goes back to its default and what was captured is lost. The clock
+        stays as set until the next change or a new bitstream."""
+        if not self.has_clocks:
+            raise RuntimeError("this bitstream has a fixed clock")
+        self.wreg(R_CLOCK, CLOCKS.index(mhz))
+        t0 = time.time()
+        time.sleep(0.02)
+        while not self.rreg(R_STATUS) & ST_READY:
+            if time.time() - t0 > 2:
+                raise RuntimeError(f"no clock at {mhz} MHz: the SDRAM did not come back")
+            time.sleep(0.01)
+        self.read_id()
+        if self.clk_hz != mhz * 1000000:
+            raise RuntimeError(f"asked for {mhz} MHz, the device says {self.clk_hz} Hz")
 
     def reset(self):
         self.ser.write(bytes([OP_RESET]))
@@ -149,7 +171,9 @@ class Oxla:
         mask = (1 << w) - 1
         samples = []
         if rle:
-            for x in words:
+            # A STOP with no run in progress leaves a last word that is none.
+            runs = words[:-1] if n and (st >> 8) & 63 == 0 else words
+            for x in runs:
                 samples.extend([x & mask] * ((x >> w) + 1))
             ti = sum((x >> w) + 1 for x in words[:tw])
         else:
@@ -181,11 +205,25 @@ def cmd_id(la, args):
     print(f"oxla protocol {la.version}: {la.channels} channels, "
           f"{la.clk_hz * la.spc / 1e6:g} MS/s max ({la.clk_hz / 1e6:g} MHz clock, "
           f"{la.spc} per clock), {la.mem_words} words"
-          f"{', rle' if la.has_rle else ''}{', adc' if la.has_adc else ''}")
+          f"{', rle' if la.has_rle else ''}{', adc' if la.has_adc else ''}"
+          f"{', clock 81/108/135 MHz' if la.has_clocks else ''}")
     print(f"status {la.rreg(R_STATUS):#x}")
 
 
 def cmd_selftest(la, args):
+    """The self test at every clock the device has, or at the one given."""
+    clocks = [args.clock] if args.clock else (CLOCKS if la.has_clocks else [None])
+    fails = 0
+    for mhz in clocks:
+        if mhz:
+            la.set_clock(mhz)
+            print(f"--- {mhz} MHz")
+        fails += selftest_once(la, args)
+    print("selftest ok" if not fails else f"selftest FAILED ({fails})")
+    return 1 if fails else 0
+
+
+def selftest_once(la, args):
     """Captures of the internal test pattern (a counter, one step per sample),
     which exercise everything but the input pins: memory, triggers, RLE."""
     mask = (1 << la.channels) - 1
@@ -301,8 +339,7 @@ def cmd_selftest(la, args):
         print(f"rle on the pins: {len(words)} words for {n} samples")
         check(n == 5000001 and not st & ST_OVERFLOW, "rle on the pins")
 
-    print("selftest ok" if not fails else f"selftest FAILED ({fails})")
-    return 1 if fails else 0
+    return fails
 
 
 def cmd_capture(la, args):
@@ -348,6 +385,8 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("port")
     p.add_argument("--baud", type=int, default=3000000)
+    p.add_argument("--clock", type=int, choices=CLOCKS,
+                   help="capture clock in MHz (stays set); selftest tries all without it")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("id")
     s = sub.add_parser("selftest")
@@ -366,6 +405,8 @@ def main():
     c.add_argument("--out")
     args = p.parse_args()
     la = Oxla(args.port, args.baud)
+    if args.clock and args.cmd != "selftest":
+        la.set_clock(args.clock)
     return {"id": cmd_id, "selftest": cmd_selftest, "capture": cmd_capture}[args.cmd](la, args)
 
 

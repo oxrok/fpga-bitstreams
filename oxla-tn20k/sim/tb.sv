@@ -11,9 +11,14 @@ module tb;
     parameter P = 1;
     parameter RLE = 1;
 
-    parameter int CLK_HZ = 108000000;
-    localparam real TCK = 1e9 / CLK_HZ;
-    localparam int BAUD = CLK_HZ / 8;       // fast, to keep the readouts short
+    parameter CLKSEL = 1;                   // the capture clock to test at: 0 = 81, 1 = 108, 2 = 135 MHz
+
+    localparam int CLK_HZ = (CLKSEL == 0) ? 81000000 : (CLKSEL == 2) ? 135000000 : 108000000;
+    localparam real TCK = 1e9 / 108000000;  // a unit of waiting, nothing more
+    // The host side really runs on 27 MHz at 3 Mbaud. Here it gets a faster
+    // clock and a faster UART, to keep the readouts short.
+    localparam int HOST_HZ = 108000000;
+    localparam int BAUD = 13500000;
     localparam real TBIT = 1e9 / BAUD;
     // Samples repeat their position in the words every G words; the ring
     // is a multiple of that (see oxla_core).
@@ -26,9 +31,16 @@ module tb;
     localparam int MEM = ((1 << 21) / G) * G;
     localparam int unsigned WMASK = (W == 32) ? 32'hffffffff : ((1 << W) - 1);
 
-    logic clk = 0;
-    always #(TCK / 2) clk = ~clk;
+    logic hclk = 0;
+    always #(1e9 / HOST_HZ / 2) hclk = ~hclk;
     logic rst = 1;
+
+    // The capture clock is whatever the device asks its PLL for.
+    wire [1:0] clksel;
+    logic clk = 0;
+    always begin
+        #((clksel == 0) ? 6.173 : (clksel == 2) ? 3.704 : 4.630) clk = ~clk;
+    end
 
     // Channels: sample i of clock n is (P*n + i) >> shift.
     logic [P*W-1:0] din = '0;
@@ -53,15 +65,16 @@ module tb;
     // drives, garbage otherwise.
     wire [31:0] dq = ram_q_valid ? ram_q : 32'hdeadbeef;
 
-    oxla_core #(.CLK_HZ(CLK_HZ), .BAUD(BAUD), .W(W), .P(P), .RLE(RLE), .ADC(0),
-                .INIT_US(5)) dut (
-        .clk(clk), .rst(rst), .din(din), .rxd(rxd), .txd(txd),
+    oxla_core #(.HOST_HZ(HOST_HZ), .BAUD(BAUD), .HOLD_BITS(8), .W(W), .P(P), .RLE(RLE),
+                .ADC(0), .INIT_US(5)) dut (
+        .hclk(hclk), .hrst(rst), .clk(clk), .pll_lock(1'b1), .clksel(clksel),
+        .din(din), .rxd(rxd), .txd(txd),
         .adc_clk(adc_clk), .trig_out(trig_out), .led(led),
         .sd_cke(sd_cke), .sd_cs_n(sd_cs_n), .sd_ras_n(sd_ras_n),
         .sd_cas_n(sd_cas_n), .sd_we_n(sd_we_n), .sd_addr(sd_addr), .sd_ba(sd_ba),
         .sd_dq_o(sd_dq_o), .sd_dq_oe(sd_dq_oe), .sd_dq_i(dq));
 
-    sdram_model #(.TCK_NS(TCK)) ram (
+    sdram_model #(.TCK_NS(7.4)) ram (
         .clk(~clk), .cke(sd_cke), .cs_n(sd_cs_n), .ras_n(sd_ras_n),
         .cas_n(sd_cas_n), .we_n(sd_we_n), .addr(sd_addr), .ba(sd_ba),
         .dqm(4'b0), .dq_i(sd_dq_o), .dq_i_valid(sd_dq_oe),
@@ -223,10 +236,31 @@ module tb;
             for (int i = 0; i < 16; i++) recv(id[i]);
             check(id[0] == "O" && id[1] == "X" && id[2] == "L" && id[3] == "A", "ID magic");
             check(id[4] == 1, "ID version");
-            check(id[5] == 8'((P > 1) << 1 | (RLE != 0)), "ID caps");
+            check(id[5] == 8'(8 | (P > 1) << 1 | (RLE != 0)), "ID caps");
             check(id[6] == W && id[7] == P, "ID geometry");
-            check({id[11], id[10], id[9], id[8]} == CLK_HZ, "ID clock");
+            check({id[11], id[10], id[9], id[8]} == 108000000, "ID clock");
             check({id[15], id[14], id[13], id[12]} == MEM, "ID memory");
+        end
+
+        // Change the clock. The link stays up; the capture side goes
+        // through reset and the SDRAM comes up again.
+        if (CLKSEL != 1) begin
+            wreg(8'h08, CLKSEL);
+            rreg(8'h80, status);
+            check(!status[4], "clock change: SDRAM should be down");
+            for (int i = 0; i < 100; i++) begin
+                rreg(8'h80, status);
+                if (status[4]) break;
+                #(TCK * 500);
+            end
+            check(status[4], "clock change: SDRAM not ready again");
+            check(clksel == 2'(CLKSEL), "clock change: PLL setting");
+            send(8'h02);
+            begin
+                byte unsigned id[16];
+                for (int i = 0; i < 16; i++) recv(id[i]);
+                check({id[11], id[10], id[9], id[8]} == CLK_HZ, "clock change: ID clock");
+            end
         end
 
         // 1. Test pattern, immediate trigger, full rate.
@@ -432,8 +466,8 @@ module tb;
         end
 
         check(ram.errors == 0, "SDRAM protocol errors");
-        if (fails == 0) $display("PASS W=%0d P=%0d RLE=%0d", W, P, RLE);
-        else $display("FAILED W=%0d P=%0d RLE=%0d: %0d", W, P, RLE, fails);
+        if (fails == 0) $display("PASS W=%0d P=%0d RLE=%0d at %0d MHz", W, P, RLE, CLK_HZ / 1000000);
+        else $display("FAILED W=%0d P=%0d RLE=%0d at %0d MHz: %0d", W, P, RLE, CLK_HZ / 1000000, fails);
         $finish;
     end
 endmodule

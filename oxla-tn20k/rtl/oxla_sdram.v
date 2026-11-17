@@ -76,11 +76,12 @@
 `default_nettype none
 
 module oxla_sdram #(
-    parameter CLK_HZ  = 108000000,
+    parameter CLK_HZ  = 135000000,     // the fastest clock it will be run at
     parameter INIT_US = 200            // power-up pause; shortened in simulation
 ) (
     input  wire        clk,
     input  wire        rst,
+    input  wire [15:0] ref_cyc,        // clocks between refreshes, for the clock as it is
     output reg         ready,
 
     // Write port. wr_valid/wr_addr/wr_data must be first-word-fall-through:
@@ -111,7 +112,8 @@ module oxla_sdram #(
     input  wire [31:0] sd_dq_i
 );
     // Timing, in clocks, from conservative figures that cover the -5, -6
-    // and -7 speed grades of the usual 2M x 32 parts.
+    // and -7 speed grades of the usual 2M x 32 parts. The waits are counted
+    // for CLK_HZ and are only longer than they need to be at a slower clock.
     function integer cyc;               // ceil(ns * CLK_HZ / 1e9), at least 2
         input integer ns;
         integer c;
@@ -130,8 +132,6 @@ module oxla_sdram #(
     // clocks, and the row must have been open for tRAS.
     localparam integer T_WEND = (T_RAS - T_RCD > 3) ? T_RAS - T_RCD : 3;
     localparam integer T_INIT = INIT_US * (CLK_HZ / 1000000);
-    // 4096 refreshes per 64 ms is one per 15.6 us; use half that.
-    localparam integer T_REF  = 7 * (CLK_HZ / 1000000);
 
     localparam [2:0] CMD_NOP = 3'b111, CMD_ACT = 3'b011, CMD_READ = 3'b101,
                      CMD_WRITE = 3'b100, CMD_PRE = 3'b010, CMD_REF = 3'b001,
@@ -164,7 +164,7 @@ module oxla_sdram #(
         {sd_ras_n, sd_cas_n, sd_we_n} <= CMD_NOP;
 
         if (ref_cnt == 0) begin
-            ref_cnt <= T_REF[15:0];
+            ref_cnt <= ref_cyc;
             ref_due <= 1'b1;
         end else
             ref_cnt <= ref_cnt - 1'b1;
@@ -175,7 +175,7 @@ module oxla_sdram #(
             wait_cnt <= T_INIT[23:0] + 24'd2;
             ready <= 1'b0;
             init_refs <= 4'd8;
-            ref_cnt <= T_REF[15:0];
+            ref_cnt <= ref_cyc;
             ref_due <= 1'b0;
             row_end <= 1'b0;
             rd_cnt <= 3'd0;

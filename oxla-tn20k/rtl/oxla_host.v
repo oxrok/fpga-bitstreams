@@ -1,5 +1,9 @@
 // Host side: the UART, the command parser, the configuration registers and
 // the memory readout. The protocol is in docs/PROTOCOL.md.
+//
+// All of this runs on a fixed clock of its own, not on the capture clock,
+// so the link to the host stays up while the capture PLL changes frequency. oxla_core
+// carries what crosses between the two clocks.
 
 //   The parser. Every command is one opcode byte and a fixed number of
 //   argument bytes; answers go out through the same shift register, low byte
@@ -24,7 +28,7 @@
 //          +---+---+                                           |
 //              | rd_req                                        |
 //              v                                               |
-//          +-----------+  rd_done: 4 bytes to send             |
+//          +-----------+  rd_ack: 4 bytes to send              |
 //          | S_MEMWAIT |---------------------------------------+
 //          +-----------+
 //
@@ -43,8 +47,9 @@
 `default_nettype none
 
 module oxla_host #(
-    parameter CLK_HZ = 108000000,
+    parameter CLK_HZ = 108000000,   // this module's clock
     parameter BAUD   = 3000000,
+    parameter HOLD_BITS = 17,       // capture side held in reset for 2^HOLD_BITS clocks
     parameter W      = 16,
     parameter P      = 1,
     parameter RLE    = 0,
@@ -55,6 +60,11 @@ module oxla_host #(
     input  wire         rst,
     input  wire         rxd,
     output wire         txd,
+    // The capture clock: 0 = 81, 1 = 108, 2 = 135 MHz. Not reset by the
+    // RESET command. clk_hold is high for a few milliseconds after a change,
+    // while the PLL settles.
+    output reg  [1:0]   clksel,
+    output wire         clk_hold,
 
     output reg  [23:0]  cfg_div,
     output reg  [21:0]  cfg_post_words,
@@ -81,7 +91,7 @@ module oxla_host #(
     output reg          rd_req,
     output reg  [20:0]  rd_addr,
     input  wire [31:0]  rd_data,
-    input  wire         rd_done
+    input  wire         rd_ack          // level: rd_data is the word; falls after rd_req
 );
     localparam [7:0] PROTO_VERSION = 8'd1;
 
@@ -89,14 +99,22 @@ module oxla_host #(
                      OP_WREG = 8'h03, OP_RREG = 8'h04, OP_ARM = 8'h05,
                      OP_STOP = 8'h06, OP_RMEM = 8'h07;
 
-    wire [7:0] caps = {5'd0, ADC != 0, P > 1, RLE != 0};
-    wire [31:0] clk_hz = CLK_HZ;
+    // Bit 3: the clock can be changed (register 08).
+    wire [7:0] caps = {4'd0, 1'b1, ADC != 0, P > 1, RLE != 0};
     wire [7:0] w8 = W;
     wire [7:0] p8 = P;
 
     // Sent low byte first: "OXLA", version, caps, channels, samples per
     // clock, clock in Hz, length of the memory ring in words.
     wire [31:0] mem_words = MEM_WORDS;
+    wire [31:0] clk_hz = (clksel == 2'd0) ? 32'd81000000 :
+                         (clksel == 2'd2) ? 32'd135000000 : 32'd108000000;
+    localparam [63:0] INC64 = (64'd1 << 24) * BAUD / CLK_HZ;
+    wire [24:0] uart_inc = INC64[24:0];
+
+    reg [HOLD_BITS-1:0] hold_cnt;
+    assign clk_hold = (hold_cnt != 0);
+
     wire [127:0] id = {mem_words, clk_hz, p8, w8, caps, PROTO_VERSION,
                        "A", "L", "X", "O"};
 
@@ -106,10 +124,10 @@ module oxla_host #(
     reg        tx_start;
     wire       tx_busy;
 
-    oxla_uart_rx #(.CLK_HZ(CLK_HZ), .BAUD(BAUD)) u_rx (
-        .clk(clk), .rst(rst), .rxd(rxd), .data(rx_data), .valid(rx_valid));
-    oxla_uart_tx #(.CLK_HZ(CLK_HZ), .BAUD(BAUD)) u_tx (
-        .clk(clk), .rst(rst), .data(tx_data), .start(tx_start),
+    oxla_uart_rx u_rx (
+        .clk(clk), .rst(rst), .inc(uart_inc), .rxd(rxd), .data(rx_data), .valid(rx_valid));
+    oxla_uart_tx u_tx (
+        .clk(clk), .rst(rst), .inc(uart_inc), .data(tx_data), .start(tx_start),
         .busy(tx_busy), .txd(txd));
 
     localparam [2:0] S_IDLE = 0, S_ARGS = 1, S_EXEC = 2, S_TX = 3, S_MEM = 4,
@@ -164,12 +182,16 @@ module oxla_host #(
         stop <= 1'b0;
         soft_rst <= 1'b0;
         tx_start <= 1'b0;
+        if (hold_cnt != 0)
+            hold_cnt <= hold_cnt - 1'b1;
         if (rx_valid)
             rx_seen <= 1'b1;
 
         if (rst) begin
             state <= S_IDLE;
             rd_req <= 1'b0;
+            clksel <= 2'd1;
+            hold_cnt <= {HOLD_BITS{1'b1}};
             in_mem <= 1'b0;
             tx_n <= 5'd0;
             defaults;
@@ -214,6 +236,12 @@ module oxla_host #(
                         8'h05: cfg_chmask <= w_val[W-1:0];
                         8'h06: cfg_tmode <= w_val[2:0];
                         8'h07: cfg_tcount <= w_val[15:0];
+                        // The PLL follows clksel directly; the capture
+                        // side stays in reset until it has settled.
+                        8'h08: begin
+                            clksel <= (w_val[1:0] == 2'd3) ? 2'd1 : w_val[1:0];
+                            hold_cnt <= {HOLD_BITS{1'b1}};
+                        end
                         8'h10: cfg_a_mask <= w_val[W-1:0];
                         8'h11: cfg_a_val <= w_val[W-1:0];
                         8'h12: cfg_a_rise <= w_val[W-1:0];
@@ -260,13 +288,13 @@ module oxla_host #(
                 in_mem <= 1'b0;
                 if (rx_seen || mem_n == 22'd0)
                     state <= S_IDLE;
-                else begin
+                else if (!rd_ack) begin         // the last read has let go
                     rd_req <= 1'b1;
                     state <= S_MEMWAIT;
                 end
             end
 
-            S_MEMWAIT: if (rd_done) begin
+            S_MEMWAIT: if (rd_ack) begin
                 rd_req <= 1'b0;
                 tx_sr[31:0] <= rd_data;
                 tx_n <= 5'd4;

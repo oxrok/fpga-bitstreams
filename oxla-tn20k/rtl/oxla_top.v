@@ -1,11 +1,18 @@
 // Tang Nano 20K top level: PLL, I/O cells and the SDRAM clock around
 // oxla_core. One source, several bitstreams; the Makefile sets the
-// parameters per variant.
+// parameters per variant. The clock is not one of them: the host picks 81,
+// 108 or 135 MHz at run time.
 
-//                  +--------+  clk (54/108/135 MHz)
+//                  +--------+  clk (81/108/135 MHz)
 //   clk27 -------->|  rPLL  |-------------+---------------------------+
 //   (pin 4)        |        |  clk_sd     |                           |
 //                  +--------+----+        v                           |
+//     |                ^ FBDSEL  |        |                           |
+//     |  +--------+    +---------|--------|------ clksel -------------+
+//     +->|  rPLL  | hclk, 108 MHz, fixed: |       (a host register)   |
+//        +--------+--------------|-----> the host side of the core,   |
+//                                |       which keeps talking while    |
+//                                |       the other PLL moves          |
 //                                |   +----------------------------+   |
 //   ch[W-1:0] ---> [IDDR] -------|-->| din                        |   |
 //   (P = 2 only; plain wires     |   |                            |   |
@@ -40,7 +47,6 @@
 `default_nettype none
 
 module oxla_top #(
-    parameter CLK_MHZ   = 108,      // 54, 81, 108 or 135: multiples of the 27 MHz crystal
     parameter BAUD      = 3000000,
     parameter W         = 16,
     parameter P         = 1,
@@ -68,11 +74,6 @@ module oxla_top #(
     output wire [1:0]   O_sdram_ba,
     inout  wire [31:0]  IO_sdram_dq
 );
-    // CLKOUT = 27 MHz * (FBDIV_SEL + 1); ODIV keeps the VCO in 500..1250 MHz.
-    localparam integer FBDIV_SEL = CLK_MHZ / 27 - 1;
-    localparam integer ODIV_SEL  = (CLK_MHZ >= 135) ? 4 :
-                                   (CLK_MHZ >= 81)  ? 8 : 16;
-
     // The SDRAM clock is the PLL's second output: the system clock shifted
     // by SD_PSDA sixteenths of a period (the Makefile's SD_PHASE). The duty
     // setting is the phase plus eight for a square wave. 13 is the middle
@@ -84,32 +85,64 @@ module oxla_top #(
 
     wire clk, clk_sd, pll_lock;
 
+    // The clock is 27 MHz times 3, 4 or 5. The PLL's feedback divider is
+    // set at run time through FBDSEL, which wants 64 minus the factor
+    // (measured: 61, 60, 59 give 81, 108, 135 MHz, and it locks again after
+    // every change). With the output divider at 8 the VCO is at 648, 864 or
+    // 1080 MHz, inside its 500 to 1250.
+    //
+    // clksel comes from the host side of the core, which has a clock of
+    // its own and so keeps talking while this one changes.
+    wire [1:0] clksel;                  // 0 = 81, 1 = 108, 2 = 135 MHz
+    wire [5:0] fbdsel = 6'd61 - {4'd0, clksel};
+
     rPLL #(
         .FCLKIN("27"),
         .IDIV_SEL(0),
-        .FBDIV_SEL(FBDIV_SEL),
-        .ODIV_SEL(ODIV_SEL),
+        .FBDIV_SEL(3),
+        .ODIV_SEL(8),
+        .DYN_FBDIV_SEL("true"),
         .PSDA_SEL(`SD_PSDA),
         .DUTYDA_SEL(`SD_DUTY),
         .DEVICE("GW2AR-18C")
     ) u_pll (
         .CLKIN(clk27), .CLKFB(1'b0), .RESET(1'b0), .RESET_P(1'b0),
-        .FBDSEL(6'b0), .IDSEL(6'b0), .ODSEL(6'b0),
+        .FBDSEL(fbdsel), .IDSEL(6'b0), .ODSEL(6'b0),
         .PSDA(4'b0), .DUTYDA(4'b0), .FDLY(4'b0),
         .CLKOUT(clk), .LOCK(pll_lock),
         .CLKOUTP(clk_sd), .CLKOUTD(), .CLKOUTD3());
 
-    // Reset until the PLL has been locked for a while.
-    reg [7:0] rst_cnt = 8'd0;
-    reg       rst = 1'b1;
-    always @(posedge clk) begin
-        if (!pll_lock) begin
-            rst_cnt <= 8'd0;
-            rst <= 1'b1;
-        end else if (rst_cnt != 8'hff)
-            rst_cnt <= rst_cnt + 1'b1;
+    // The host side has the second PLL, fixed at 108 MHz. The crystal alone
+    // would do for the logic, but not for the UART: at 27 MHz a bit at
+    // 3 Mbaud is nine clocks, and the receiver then missed about one
+    // command in thirty from the board's USB bridge. At 36 clocks a bit it
+    // has not missed one.
+    wire hclk, hpll_lock;
+
+    rPLL #(
+        .FCLKIN("27"),
+        .IDIV_SEL(0),
+        .FBDIV_SEL(3),
+        .ODIV_SEL(8),
+        .DEVICE("GW2AR-18C")
+    ) u_hpll (
+        .CLKIN(clk27), .CLKFB(1'b0), .RESET(1'b0), .RESET_P(1'b0),
+        .FBDSEL(6'b0), .IDSEL(6'b0), .ODSEL(6'b0),
+        .PSDA(4'b0), .DUTYDA(4'b0), .FDLY(4'b0),
+        .CLKOUT(hclk), .LOCK(hpll_lock),
+        .CLKOUTP(), .CLKOUTD(), .CLKOUTD3());
+
+    // Host side reset: until that PLL has been locked for 255 clocks.
+    reg [7:0] hrst_cnt = 8'd0;
+    reg       hrst = 1'b1;
+    always @(posedge hclk) begin
+        if (!hpll_lock) begin
+            hrst_cnt <= 8'd0;
+            hrst <= 1'b1;
+        end else if (hrst_cnt != 8'hff)
+            hrst_cnt <= hrst_cnt + 1'b1;
         else
-            rst <= 1'b0;
+            hrst <= 1'b0;
     end
 
     // Inputs: plain for one sample per clock, IDDR for two (Q0 is the
@@ -147,10 +180,11 @@ module oxla_top #(
 `endif
 
     oxla_core #(
-        .CLK_HZ(CLK_MHZ * 1000000), .BAUD(BAUD),
+        .HOST_HZ(108000000), .BAUD(BAUD), .HOLD_BITS(19),
         .W(W), .P(P), .RLE(RLE), .ADC(ADC)
     ) u_core (
-        .clk(clk), .rst(rst), .din(din),
+        .hclk(hclk), .hrst(hrst), .clk(clk), .pll_lock(pll_lock), .clksel(clksel),
+        .din(din),
         .rxd(uart_rx), .txd(uart_tx),
         .adc_clk(adc_clk_i), .trig_out(trig_out), .led(led),
         .sd_cke(O_sdram_cke), .sd_cs_n(O_sdram_cs_n), .sd_ras_n(O_sdram_ras_n),

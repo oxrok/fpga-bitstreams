@@ -1,5 +1,6 @@
 // 8N1 UART with a fractional baud generator, so any baud rate works from any
-// system clock (CLK_HZ / BAUD need not be an integer; keep it above 8).
+// system clock (clock / baud need not be an integer; keep it above 8). The
+// bit time comes in as `inc`, because the clock can change at run time.
 
 //   A frame, and where the receiver looks at the line. It sees the falling
 //   edge of the start bit, waits half a bit, and from there samples once per
@@ -15,8 +16,8 @@
 //           must still                                              must be
 //           be low                                                  high
 //
-//   A bit time is CLK_HZ / BAUD clocks, which need not be a whole number.
-//   Each clock adds INC = 2^24 * BAUD / CLK_HZ to a 24 bit accumulator, and
+//   A bit time is clock / baud clocks, which need not be a whole number.
+//   Each clock adds inc = 2^24 * baud / clock to a 24 bit accumulator, and
 //   the carry out of it (acc[24]) is the tick. The ticks are then at most one
 //   clock early or late and never drift. At 3 Mbaud from 135 MHz a bit is
 //   45 clocks; from 108 MHz, 36; from a 100 MHz clock it would be 33, 33,
@@ -24,19 +25,14 @@
 
 `default_nettype none
 
-module oxla_uart_rx #(
-    parameter CLK_HZ = 108000000,
-    parameter BAUD   = 3000000
-) (
+module oxla_uart_rx (
     input  wire       clk,
     input  wire       rst,
+    input  wire [24:0] inc,         // 2^24 * baud / clock
     input  wire       rxd,
     output reg  [7:0] data,
     output reg        valid
 );
-    localparam [63:0] INC64 = (64'd1 << 24) * BAUD / CLK_HZ;
-    localparam [24:0] INC = INC64[24:0];
-
     reg [1:0]  sync;
     reg [24:0] acc;         // bit 24 is the carry: one tick per bit time
     reg [3:0]  bitn;
@@ -55,7 +51,7 @@ module oxla_uart_rx #(
                 bitn <= 4'd0;
             end
         end else begin
-            acc <= {1'b0, acc[23:0]} + INC;
+            acc <= {1'b0, acc[23:0]} + inc;
             if (acc[24]) begin
                 bitn <= bitn + 1'b1;
                 if (bitn == 4'd0) begin
@@ -70,20 +66,15 @@ module oxla_uart_rx #(
     end
 endmodule
 
-module oxla_uart_tx #(
-    parameter CLK_HZ = 108000000,
-    parameter BAUD   = 3000000
-) (
+module oxla_uart_tx (
     input  wire       clk,
     input  wire       rst,
+    input  wire [24:0] inc,
     input  wire [7:0] data,
     input  wire       start,        // ignored while busy
     output reg        busy,
     output reg        txd
 );
-    localparam [63:0] INC64 = (64'd1 << 24) * BAUD / CLK_HZ;
-    localparam [24:0] INC = INC64[24:0];
-
     reg [24:0] acc;
     reg [8:0]  sr;
     reg [3:0]  n;
@@ -102,7 +93,7 @@ module oxla_uart_tx #(
                 acc <= 25'd0;
             end
         end else begin
-            acc <= {1'b0, acc[23:0]} + INC;
+            acc <= {1'b0, acc[23:0]} + inc;
             if (acc[24]) begin
                 if (n == 4'd0)
                     busy <= 1'b0;

@@ -1,5 +1,5 @@
-// The logic analyzer behind the pins: everything on the system clock, with
-// no vendor primitives, so it simulates as it is.
+// The logic analyzer behind the pins, with no vendor primitives, so it
+// simulates as it is.
 //
 // Samples go sampler -> trigger -> packer -> FIFO -> SDRAM. The SDRAM is a
 // ring of 2^21 words that is written for as long as the capture runs; the
@@ -63,16 +63,20 @@
 `default_nettype none
 
 module oxla_core #(
-    parameter CLK_HZ  = 108000000,
+    parameter HOST_HZ = 108000000,  // hclk
     parameter BAUD    = 3000000,
+    parameter HOLD_BITS = 17,       // see oxla_host
     parameter W       = 16,         // channels: 8, 14 or 16
     parameter P       = 1,          // samples per clock: 1 or 2
     parameter RLE     = 0,          // run length encoding available (P = 1)
     parameter ADC     = 0,          // the channels are a parallel ADC's data
     parameter INIT_US = 200
 ) (
-    input  wire           clk,
-    input  wire           rst,
+    input  wire           hclk,         // host side: a fixed clock
+    input  wire           hrst,
+    input  wire           clk,          // capture side: the PLL
+    input  wire           pll_lock,
+    output wire [1:0]     clksel,       // what the PLL should make: 0 = 81, 1 = 108, 2 = 135 MHz
     input  wire [P*W-1:0] din,
     input  wire           rxd,
     output wire           txd,
@@ -108,6 +112,30 @@ module oxla_core #(
     localparam integer MEM_WORDS = ((1 << 21) / group(W)) * group(W);
     localparam [20:0]  LAST_ADDR = MEM_WORDS - 1;
 
+    // Two clocks. The host side (UART, commands, registers, readout) has a
+    // fixed one; everything that touches samples or the SDRAM is on the
+    // PLL the host can retune. What crosses, and how:
+    //
+    //      host side (hclk)                         capture side (clk)
+    //
+    //   cfg_* registers  ------------------------->  used as they are: the
+    //                                                host only writes them
+    //                                                while nothing runs
+    //   arm, stop, soft_rst  --[toggle]--[sync]-->   one-clock pulses
+    //   clk_hold  ---------------------[sync]---->   reset while the PLL
+    //                                                settles
+    //   rd_req, rd_addr  --------------[sync]---->   read one word
+    //   rd_ack  <----------------------[sync]-----   rd_data is the word
+    //   status bits  <-----------------[sync]-----   run, triggered, done,
+    //                                                overflow, SDRAM ready
+    //   trig, stop, count, rd_data  <-------------   read only once done or
+    //                                                rd_ack says they are still
+
+    // Clocks between SDRAM refreshes (4096 per 64 ms is one per 15.6 us;
+    // this is 7 us), for the clock as it is.
+    wire [15:0] ref_cyc  = (clksel == 2'd0) ? 16'd567 :
+                           (clksel == 2'd2) ? 16'd945 : 16'd756;
+
     wire [23:0]  cfg_div;
     wire [21:0]  cfg_post_words, cfg_pre_words;
     wire [31:0]  cfg_post_samples;
@@ -117,7 +145,39 @@ module oxla_core #(
     wire [15:0]  cfg_tcount;
     wire [W-1:0] cfg_a_mask, cfg_a_val, cfg_a_rise, cfg_a_fall, cfg_a_edge;
     wire [W-1:0] cfg_b_mask, cfg_b_val, cfg_b_rise, cfg_b_fall, cfg_b_edge;
-    wire         arm, stop, soft_rst;
+    wire         arm_h, stop_h, soft_rst_h;     // pulses on hclk
+    wire         clk_hold;
+
+    // Capture side reset: while the host side holds it (after power up and
+    // after a change of clock), while the PLL is not locked, and for 255
+    // clocks more.
+    reg [2:0] hold_s = 3'b111;
+    reg [7:0] rst_cnt = 8'd0;
+    reg       rst = 1'b1;
+    always @(posedge clk) begin
+        hold_s <= {hold_s[1:0], clk_hold | hrst};
+        if (hold_s[2] || !pll_lock) begin
+            rst_cnt <= 8'd0;
+            rst <= 1'b1;
+        end else if (rst_cnt != 8'hff)
+            rst_cnt <= rst_cnt + 1'b1;
+        else
+            rst <= 1'b0;
+    end
+
+    // Pulses from the host side: a toggle there, an edge here.
+    reg [2:0] t_h = 3'b000;
+    reg [2:0] t_s0, t_s1, t_s2;
+    always @(posedge hclk)
+        t_h <= t_h ^ {soft_rst_h, stop_h, arm_h};
+    always @(posedge clk) begin
+        t_s0 <= t_h;
+        t_s1 <= t_s0;
+        t_s2 <= t_s1;
+    end
+    wire arm      = t_s2[0] ^ t_s1[0];
+    wire stop     = t_s2[1] ^ t_s1[1];
+    wire soft_rst = t_s2[2] ^ t_s1[2];
 
     reg          run, triggered, done, overflow, stop_req;
     reg  [20:0]  wr_ptr, trig_addr, stop_addr;
@@ -125,7 +185,7 @@ module oxla_core #(
     reg  [21:0]  wr_count, post_rem;
 
     wire         sd_ready;
-    wire         rd_req, rd_done;
+    wire         rd_req_h, rd_done;
     wire [20:0]  rd_addr;
     wire [31:0]  rd_data;
     wire [5:0]   last_bits;
@@ -133,15 +193,36 @@ module oxla_core #(
     wire         wr_wrap = (wr_ptr == LAST_ADDR);
     wire [20:0]  wr_next = wr_wrap ? 21'd0 : wr_ptr + 1'b1;
 
-    wire [31:0] st_status = {18'd0, last_fill, 3'd0, sd_ready, overflow, done,
-                             triggered, run};
+    // Memory read: the request crosses as a level, the answer as a level
+    // that stays until the request is gone.
+    reg [1:0] rd_req_s;
+    reg       rd_ack;
+    always @(posedge clk) begin
+        rd_req_s <= {rd_req_s[0], rd_req_h};
+        if (rst || !rd_req_s[1])
+            rd_ack <= 1'b0;
+        else if (rd_done)
+            rd_ack <= 1'b1;
+    end
+
+    // Status to the host side.
+    reg [4:0] st_s0, st_s1;
+    reg [1:0] rd_ack_s;
+    always @(posedge hclk) begin
+        st_s0 <= {sd_ready, overflow, done, triggered, run};
+        st_s1 <= st_s0;
+        rd_ack_s <= {rd_ack_s[0], rd_ack};
+    end
+
+    wire [31:0] st_status = {18'd0, last_fill, 3'd0, st_s1};
     wire [31:0] st_trig   = {6'd0, trig_sub, 3'd0, trig_addr};
     wire [31:0] st_stop   = {11'd0, stop_addr};
     wire [31:0] st_count  = {10'd0, wr_count};
 
-    oxla_host #(.CLK_HZ(CLK_HZ), .BAUD(BAUD), .W(W), .P(P), .RLE(RLE), .ADC(ADC),
-                .MEM_WORDS(MEM_WORDS)) u_host (
-        .clk(clk), .rst(rst), .rxd(rxd), .txd(txd),
+    oxla_host #(.CLK_HZ(HOST_HZ), .BAUD(BAUD), .HOLD_BITS(HOLD_BITS),
+                .W(W), .P(P), .RLE(RLE), .ADC(ADC), .MEM_WORDS(MEM_WORDS)) u_host (
+        .clk(hclk), .rst(hrst), .rxd(rxd), .txd(txd),
+        .clksel(clksel), .clk_hold(clk_hold),
         .cfg_div(cfg_div), .cfg_post_words(cfg_post_words),
         .cfg_pre_words(cfg_pre_words), .cfg_post_samples(cfg_post_samples),
         .cfg_rle(cfg_rle), .cfg_ddr(cfg_ddr), .cfg_test(cfg_test),
@@ -150,10 +231,10 @@ module oxla_core #(
         .cfg_a_fall(cfg_a_fall), .cfg_a_edge(cfg_a_edge),
         .cfg_b_mask(cfg_b_mask), .cfg_b_val(cfg_b_val), .cfg_b_rise(cfg_b_rise),
         .cfg_b_fall(cfg_b_fall), .cfg_b_edge(cfg_b_edge),
-        .arm(arm), .stop(stop), .soft_rst(soft_rst),
+        .arm(arm_h), .stop(stop_h), .soft_rst(soft_rst_h),
         .st_status(st_status), .st_trig(st_trig), .st_stop(st_stop),
         .st_count(st_count),
-        .rd_req(rd_req), .rd_addr(rd_addr), .rd_data(rd_data), .rd_done(rd_done));
+        .rd_req(rd_req_h), .rd_addr(rd_addr), .rd_data(rd_data), .rd_ack(rd_ack_s[1]));
 
     // Sample path.
     wire [P*W-1:0] s_data, t_data;
@@ -196,12 +277,13 @@ module oxla_core #(
         .clk(clk), .clr(!run), .push(p_push), .din(p_data), .full(f_full),
         .pop(wr_ack), .valid(f_valid), .dout(f_dout));
 
-    oxla_sdram #(.CLK_HZ(CLK_HZ), .INIT_US(INIT_US)) u_sdram (
-        .clk(clk), .rst(rst), .ready(sd_ready),
+    oxla_sdram #(.INIT_US(INIT_US)) u_sdram (
+        .clk(clk), .rst(rst), .ref_cyc(ref_cyc), .ready(sd_ready),
         .wr_valid(f_valid && run), .wr_addr(wr_ptr), .wr_wrap(wr_wrap),
         .wr_data(f_dout[31:0]),
         .wr_ack(wr_ack),
-        .rd_req(rd_req), .rd_addr(rd_addr), .rd_data(rd_data), .rd_done(rd_done),
+        .rd_req(rd_req_s[1] && !rd_ack), .rd_addr(rd_addr), .rd_data(rd_data),
+        .rd_done(rd_done),
         .sd_cke(sd_cke), .sd_cs_n(sd_cs_n), .sd_ras_n(sd_ras_n),
         .sd_cas_n(sd_cas_n), .sd_we_n(sd_we_n), .sd_addr(sd_addr), .sd_ba(sd_ba),
         .sd_dq_o(sd_dq_o), .sd_dq_oe(sd_dq_oe), .sd_dq_i(sd_dq_i));
