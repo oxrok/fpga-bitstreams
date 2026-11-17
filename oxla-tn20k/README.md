@@ -144,7 +144,9 @@ Built bitstreams are on the repository's
 `oxla-tn20k-VERSION.tar.gz`: the six variants, named
 `oxla-tn20k-la16-rle.fs` and so on, which is what oxrok looks for. Every
 file in a release was loaded into a board and passed the self test before
-it was packed; the release notes say with what it was built.
+it was packed; the release notes say with what it was built. oxrok's
+`oxla-tn20k` driver loads them into the board by itself, and
+`oxrok firmware fetch oxla-tn20k` downloads them for it.
 
     make release VERSION=0.1.0 PORT=/dev/cu.usbserial-XXXX1
     make publish VERSION=0.1.0
