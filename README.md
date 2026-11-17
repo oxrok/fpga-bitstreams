@@ -8,7 +8,9 @@ host protocol of each design. One directory per design and board.
 | [oxla-tn20k](oxla-tn20k/) | logic analyzer: 8 to 16 channels, up to 270 MS/s, 2M words of SDRAM, RLE, A/B triggers | Sipeed Tang Nano 20K | runs on a board, self-tested; oxrok driver `oxla` written, not yet released |
 
 Built bitstreams are not in the repository; `make` in a design's directory
-builds them. Vendor bitstreams do not belong here either: those go through
+builds them, and the
+[releases](https://github.com/oxrok/fpga-bitstreams/releases) have the ones
+that were tested on a board. Vendor bitstreams do not belong here either: those go through
 [oxrok-firmware](https://github.com/oxrok/oxrok-firmware) and its rules.
 
 ## A new design

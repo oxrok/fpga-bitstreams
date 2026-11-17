@@ -7,11 +7,15 @@
 #   make sim        simulation            make prog V=la16-rle   load into SRAM
 #   make la16-rle SEED=3 BUILD=build/s3   another placement, elsewhere
 #   make flash V=la16-rle   write to the board's flash
+#   make release VERSION=0.1.0 PORT=/dev/cu.usbserial-XXXX1
+#                   build all, self test each on the board, pack them
+#   make publish VERSION=0.1.0    that pack as a GitHub release
 
 YOSYS   ?= yosys
 NEXTPNR ?= .venv/bin/yowasp-nextpnr-himbaechel-gowin
 PACK    ?= .venv/bin/gowin_pack
 LOADER  ?= openFPGALoader
+PYTHON  ?= .venv/bin/python
 
 DEVICE = GW2AR-LV18QN88C8/I7
 FAMILY = GW2A-18C
@@ -85,6 +89,44 @@ prog: $(BUILD)/$(V)/oxla.fs
 flash: $(BUILD)/$(V)/oxla.fs
 	$(LOADER) -b tangnano20k -f $<
 
+# A release is the bitstreams that passed the self test on a board, and
+# only those: every variant is loaded and tested, and one failure stops it.
+# They go out as one archive (a .fs is 7 MB of text and packs to 80 kB),
+# under the names oxrok looks them up by.
+RELEASE = $(BUILD)/release
+TAG     = oxla-tn20k-v$(VERSION)
+PACKAGE = oxla-tn20k-$(VERSION).tar.gz
+
+release: all
+	@test -n "$(VERSION)" || { echo "VERSION=x.y.z is needed"; false; }
+	@test -n "$(PORT)" || { echo "PORT=... is needed: the board's serial port, the second of its two"; false; }
+	@test -z "$$(git status --porcelain .)" || { echo "commit first: a release is built from a commit"; false; }
+	@rm -rf $(RELEASE) && mkdir -p $(RELEASE)
+	@for v in $(NAMES); do \
+	    echo "== $$v"; \
+	    $(LOADER) -b tangnano20k $(BUILD)/$$v/oxla.fs > /dev/null && sleep 1 && \
+	    $(PYTHON) tools/oxla.py $(PORT) id | head -1 | sed "s/^/$$v: /" | tee -a $(RELEASE)/TESTED && \
+	    $(PYTHON) tools/oxla.py $(PORT) selftest | tail -1 && \
+	    cp $(BUILD)/$$v/oxla.fs $(RELEASE)/oxla-tn20k-$$v.fs || exit 1; \
+	done
+	@{ echo "oxla-tn20k $(VERSION), commit $$(git rev-parse HEAD)"; \
+	   echo "Built $$(date -u +%Y-%m-%d) with $$($(YOSYS) -V | cut -d' ' -f1-2),"; \
+	   echo "$$($(NEXTPNR) --version 2>&1 | sed 's/.*(Version \(.*\))/\1/') (YoWASP)" \
+	        "and apycula $$($(PYTHON) -c 'import importlib.metadata as m; print(m.version("apycula"))')."; \
+	   echo "Every file passed tools/oxla.py selftest on one Tang Nano 20K, at 81, 108 and"; \
+	   echo "135 MHz, loaded into the FPGA as it is here. What each said it was:"; \
+	   echo; cat $(RELEASE)/TESTED; } > $(RELEASE)/NOTES.txt
+	@rm $(RELEASE)/TESTED
+	cd $(RELEASE) && tar -czf $(PACKAGE) oxla-tn20k-*.fs && shasum -a 256 $(PACKAGE) oxla-tn20k-*.fs > SHA256SUMS
+	@echo "$(RELEASE)/$(PACKAGE): $(words $(NAMES)) bitstreams, all passed"
+
+publish:
+	@test -f $(RELEASE)/$(PACKAGE) || { echo "make release VERSION=$(VERSION) PORT=... first"; false; }
+	git tag $(TAG) $$(sed -n '1s/.*commit //p' $(RELEASE)/NOTES.txt)
+	git push origin $(TAG)
+	gh release create $(TAG) --title "oxla-tn20k $(VERSION)" --notes-file $(RELEASE)/NOTES.txt \
+	    $(RELEASE)/$(PACKAGE) $(RELEASE)/SHA256SUMS
+
 venv:
 	uv venv --python 3.12 .venv
 	uv pip install --python .venv/bin/python apycula yowasp-nextpnr-himbaechel-gowin pyserial
@@ -95,4 +137,4 @@ sim:
 clean:
 	rm -rf build sim/obj_dir
 
-.PHONY: all prog flash venv sim clean $(NAMES)
+.PHONY: all prog flash release publish venv sim clean $(NAMES)

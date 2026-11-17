@@ -137,6 +137,22 @@ program, uv for `make venv`.
     tools/oxla.py /dev/cu.usbserial-XXXX1 capture --mode a-then-b --a 0=r --b 1=f,2=1
     tools/oxla.py --clock 135 /dev/cu.usbserial-XXXX1 capture --ddr
 
+## Releases
+
+Built bitstreams are on the repository's
+[releases](https://github.com/oxrok/fpga-bitstreams/releases), as
+`oxla-tn20k-VERSION.tar.gz`: the six variants, named
+`oxla-tn20k-la16-rle.fs` and so on, which is what oxrok looks for. Every
+file in a release was loaded into a board and passed the self test before
+it was packed; the release notes say with what it was built.
+
+    make release VERSION=0.1.0 PORT=/dev/cu.usbserial-XXXX1
+    make publish VERSION=0.1.0
+
+The first builds every variant from a clean commit, loads each into the
+board and runs the self test on it, and stops at the first that fails. The
+second tags that commit and uploads the archive (needs `gh`).
+
 ## How it works
 
     pins -> sampler -> trigger -> packer -> FIFO -> SDRAM <- readout <- UART
