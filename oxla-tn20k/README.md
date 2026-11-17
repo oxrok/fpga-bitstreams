@@ -8,8 +8,8 @@ then A, each with an event count).
 
 Status: the gateware simulates and runs on a board; the checks are listed
 under [What has been checked](#what-has-been-checked). The oxrok driver for
-it does not exist yet. `tools/oxla.py` is a bring-up tool that speaks the
-protocol and is the reference for that driver.
+it, `oxla`, is written and not yet released. `tools/oxla.py` is a bring-up
+tool that speaks the protocol and is the reference for that driver.
 
 ## The board
 
@@ -100,9 +100,9 @@ written in one clock, two subtractions and comparisons chained for two
 samples per clock) and each now has a register or does the work in
 parallel. The Makefile also asks nextpnr for 15% more than the fastest clock
 (`MARGIN`), so a marginal build fails to build; `SEED=n` then tries another
-placement, and a variant whose default placement falls short has the seed
-that made it in the Makefile. Run the self test on a new build all the
-same; it tries every clock.
+placement. A variant whose default placement falls short can have the seed
+that made it as a last field in `VARIANTS`; none needs one at present. Run
+the self test on a new build all the same; it tries every clock.
 
 Fourteen is as many channels as fit at two samples per clock: the SDRAM
 takes a little under one 32 bit word per clock, 14 channels twice a clock

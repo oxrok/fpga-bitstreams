@@ -5,7 +5,7 @@ host protocol of each design. One directory per design and board.
 
 | directory | what | board | status |
 |---|---|---|---|
-| [oxla-tn20k](oxla-tn20k/) | logic analyzer: 8 to 16 channels, up to 270 MS/s, 2M words of SDRAM, RLE, A/B triggers | Sipeed Tang Nano 20K | runs on a board, self-tested; no oxrok driver yet |
+| [oxla-tn20k](oxla-tn20k/) | logic analyzer: 8 to 16 channels, up to 270 MS/s, 2M words of SDRAM, RLE, A/B triggers | Sipeed Tang Nano 20K | runs on a board, self-tested; oxrok driver `oxla` written, not yet released |
 
 Built bitstreams are not in the repository; `make` in a design's directory
 builds them. Vendor bitstreams do not belong here either: those go through

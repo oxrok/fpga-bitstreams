@@ -15,8 +15,8 @@ module tb;
 
     localparam int CLK_HZ = (CLKSEL == 0) ? 81000000 : (CLKSEL == 2) ? 135000000 : 108000000;
     localparam real TCK = 1e9 / 108000000;  // a unit of waiting, nothing more
-    // The host side really runs on 27 MHz at 3 Mbaud. Here it gets a faster
-    // clock and a faster UART, to keep the readouts short.
+    // The host side really runs on 108 MHz at 3 Mbaud. Here it gets the
+    // same clock and a faster UART, to keep the readouts short.
     localparam int HOST_HZ = 108000000;
     localparam int BAUD = 13500000;
     localparam real TBIT = 1e9 / BAUD;
