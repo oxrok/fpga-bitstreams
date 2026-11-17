@@ -106,8 +106,10 @@ release: all
 	    echo "== $$v"; \
 	    $(LOADER) -b tangnano20k $(BUILD)/$$v/oxla.fs > /dev/null && sleep 1 && \
 	    $(PYTHON) tools/oxla.py $(PORT) id | head -1 | sed "s/^/$$v: /" | tee -a $(RELEASE)/TESTED && \
-	    $(PYTHON) tools/oxla.py $(PORT) selftest | tail -1 && \
-	    cp $(BUILD)/$$v/oxla.fs $(RELEASE)/oxla-tn20k-$$v.fs || exit 1; \
+	    { $(PYTHON) tools/oxla.py $(PORT) selftest > $(RELEASE)/$$v.log 2>&1; ok=$$?; \
+	      tail -1 $(RELEASE)/$$v.log; test $$ok = 0; } && \
+	    cp $(BUILD)/$$v/oxla.fs $(RELEASE)/oxla-tn20k-$$v.fs || \
+	    { echo "$$v failed: $(RELEASE)/$$v.log"; exit 1; }; \
 	done
 	@{ echo "oxla-tn20k $(VERSION), commit $$(git rev-parse HEAD)"; \
 	   echo "Built $$(date -u +%Y-%m-%d) with $$($(YOSYS) -V | cut -d' ' -f1-2),"; \
@@ -116,7 +118,7 @@ release: all
 	   echo "Every file passed tools/oxla.py selftest on one Tang Nano 20K, at 81, 108 and"; \
 	   echo "135 MHz, loaded into the FPGA as it is here. What each said it was:"; \
 	   echo; cat $(RELEASE)/TESTED; } > $(RELEASE)/NOTES.txt
-	@rm $(RELEASE)/TESTED
+	@rm $(RELEASE)/TESTED $(RELEASE)/*.log
 	cd $(RELEASE) && tar -czf $(PACKAGE) oxla-tn20k-*.fs && shasum -a 256 $(PACKAGE) oxla-tn20k-*.fs > SHA256SUMS
 	@echo "$(RELEASE)/$(PACKAGE): $(words $(NAMES)) bitstreams, all passed"
 
