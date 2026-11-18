@@ -29,6 +29,11 @@ SEED ?=
 # The release the bitstreams say they are (register 91), x.y.z; none for a
 # build that is no release. A change of it builds everything again.
 VERSION ?=
+ifneq ($(VERSION),)
+ifeq ($(shell echo "$(VERSION)" | awk -F. '/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$$/ && $$1 < 256 && $$2 < 256 && $$3 < 256 && $$1 + $$2 + $$3 > 0 { print "ok" }'),)
+$(error VERSION=$(VERSION): it is x.y.z, each from 0 to 255 and not all 0, a byte each in the register)
+endif
+endif
 VERNUM := $(shell echo "$(VERSION)" | awk -F. '{ print $$1 * 65536 + $$2 * 256 + $$3 }')
 
 # The capture clock is set at run time, up to this many MHz, and nextpnr
@@ -105,8 +110,13 @@ flash: $(BUILD)/$(V)/oxla.fs
 # the board (tools/sidecar.py, docs/SIDECAR.md): that is how oxrok knows
 # what a file is before it is loaded. They go out as one archive (a .fs is
 # 7 MB of text and packs to 80 kB), under the names oxrok looks them up by.
-# The first variant is the one a board gets when none is asked for.
+# The first variant is the one a board gets when none is asked for. A file
+# is copied to where it is packed from before it is loaded, so that what
+# was tested is what goes out.
 RELEASE = $(BUILD)/release
+# The commit a release is of, read once: what is built, described and
+# tagged is that one, and a checkout that moved meanwhile stops it.
+COMMIT := $(shell git rev-parse HEAD 2>/dev/null)
 TAG     = oxla-tn20k-v$(VERSION)
 PACKAGE = oxla-tn20k-$(VERSION).tar.gz
 
@@ -117,17 +127,18 @@ release: all
 	@rm -rf $(RELEASE) && mkdir -p $(RELEASE)
 	@for v in $(NAMES); do \
 	    echo "== $$v"; \
-	    $(LOADER) -b tangnano20k $(BUILD)/$$v/oxla.fs > /dev/null && sleep 1 && \
+	    cp $(BUILD)/$$v/oxla.fs $(RELEASE)/oxla-tn20k-$$v.fs && \
+	    $(LOADER) -b tangnano20k $(RELEASE)/oxla-tn20k-$$v.fs > /dev/null && sleep 1 && \
 	    $(PYTHON) tools/oxla.py $(PORT) id | head -1 | sed "s/^/$$v: /" | tee -a $(RELEASE)/TESTED && \
 	    { $(PYTHON) tools/oxla.py $(PORT) selftest > $(RELEASE)/$$v.log 2>&1; ok=$$?; \
 	      tail -1 $(RELEASE)/$$v.log; test $$ok = 0; } && \
-	    cp $(BUILD)/$$v/oxla.fs $(RELEASE)/oxla-tn20k-$$v.fs && \
 	    $(PYTHON) tools/sidecar.py --port $(PORT) --variant $$v --version $(VERSION) \
-	        --commit $$(git rev-parse HEAD) $$(test $$v = $(firstword $(NAMES)) && echo --default) \
+	        --commit $(COMMIT) --selftest-passed $$(test $$v = $(firstword $(NAMES)) && echo --default) \
 	        $(RELEASE)/oxla-tn20k-$$v.fs > $(RELEASE)/oxla-tn20k-$$v.fs.json || \
 	    { echo "$$v failed: $(RELEASE)/$$v.log"; exit 1; }; \
 	done
-	@{ echo "oxla-tn20k $(VERSION), commit $$(git rev-parse HEAD)"; \
+	@test "$$(git rev-parse HEAD)" = "$(COMMIT)" || { echo "the checkout moved from $(COMMIT) during the release"; false; }
+	@{ echo "oxla-tn20k $(VERSION), commit $(COMMIT)"; \
 	   echo "Built $$(date -u +%Y-%m-%d) with $$($(YOSYS) -V | cut -d' ' -f1-2),"; \
 	   echo "$$($(NEXTPNR) --version 2>&1 | sed 's/.*(Version \(.*\))/\1/') (YoWASP)" \
 	        "and apycula $$($(PYTHON) -c 'import importlib.metadata as m; print(m.version("apycula"))')."; \

@@ -51,4 +51,4 @@ believes the device.
 | `target.loader` | how the file gets in: `gowin-jtag-sram`, the load over JTAG that is gone at power off |
 | `id` | the fields of the ID the bitstream gives when it starts: `caps` is the capability byte as it is |
 | `description` | the registers from `90` as `tools/oxla.py describe` prints them |
-| `tested` | the day it passed `tools/oxla.py selftest` on a board |
+| `tested` | the day it passed `tools/oxla.py selftest` on a board; `null` in a file written with no test behind it, which no release has |

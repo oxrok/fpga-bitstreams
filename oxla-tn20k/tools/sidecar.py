@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Writes the description that goes with a bitstream: FILE.fs.json.
 
-    sidecar.py --port PORT --variant NAME --version X.Y.Z --commit HASH [--default] FILE.fs
+    sidecar.py --port PORT --variant NAME --version X.Y.Z --commit HASH
+               [--selftest-passed] [--default] FILE.fs
 
 The bitstream must be the one running on the board at PORT: what the file
 says about it is what the board answered, not what the build meant it to
 be. The part's ID code is read from the .fs itself. Used by `make release`,
-after the self test; the format is in docs/SIDECAR.md.
+which passes --selftest-passed once the self test has: without it the file
+says of no test that it passed. The format is in docs/SIDECAR.md.
 """
 
 import argparse
@@ -35,6 +37,8 @@ def main():
     p.add_argument("--variant", required=True)
     p.add_argument("--version", required=True)
     p.add_argument("--commit", required=True)
+    p.add_argument("--selftest-passed", action="store_true",
+                   help="tools/oxla.py selftest passed on this board, with this bitstream, just now")
     p.add_argument("--default", action="store_true",
                    help="the variant a board gets when none is asked for")
     args = p.parse_args()
@@ -70,7 +74,8 @@ def main():
         },
         "id": d,
         "description": desc,
-        "tested": {"date": datetime.date.today().isoformat(), "selftest": "pass"},
+        "tested": ({"date": datetime.date.today().isoformat(), "selftest": "pass"}
+                   if args.selftest_passed else None),
     }, sys.stdout, indent=2)
     print()
 

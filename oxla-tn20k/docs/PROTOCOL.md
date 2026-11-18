@@ -94,7 +94,7 @@ set, the channels as logic unless bit 2 says they are an ADC's.
 |---|---|---|
 | `90` | DESC | the format of these registers, 1 |
 | `91` | BUILD | the release the bitstream is of: bits 23:16 major, 15:8 minor, 7:0 patch. 0 for a build that is none |
-| `92` | CLOCKS | bits 7:0 how many values CLOCK takes, from 0; bits 15:8 the one it has when the FPGA is configured |
+| `92` | CLOCKS | bits 7:0 how many values CLOCK takes, from 0, 8 at most; bits 15:8 the one it has when the FPGA is configured |
 | `93` | CHANNELS | bits 7:0 logic channels; bits 15:8 analog channels; bits 23:16 bits of an analog sample. The W channels of the ID are the logic channels, or the analog ones, each of that many bits, lowest first |
 | `94` | TRIGGER | bits 7:0 terms; bits 15:8 bits of TCOUNT; bits 23:16 the values of TMODE there are, a bit each |
 | `95` | LIMITS | bits 7:0 the lowest DIV; bits 15:8 bits of DIV; bits 23:16 bits of the count in a run length encoded word, 0 without RLE |

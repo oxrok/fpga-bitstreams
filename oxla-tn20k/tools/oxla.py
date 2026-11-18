@@ -93,11 +93,15 @@ class Oxla:
              "mem_words": self.mem_words}
         if not self.has_desc:
             return d
+        # A later format adds to these and leaves them as they are; 0 is a
+        # bitstream with the bit and none of the registers.
         fmt = self.rreg(R_DESC)
-        if fmt != 1:
-            raise RuntimeError(f"description format {fmt}: this tool knows 1")
+        if fmt == 0:
+            return d
         build, clocks, channels = self.rreg(R_BUILD), self.rreg(R_CLOCKS), self.rreg(R_CHANNELS)
         trigger, limits = self.rreg(R_TRIGGER), self.rreg(R_LIMITS)
+        if clocks & 255 > 8:
+            raise RuntimeError(f"{clocks & 255} clocks described: there are registers for 8")
         d["description"] = {
             "format": fmt,
             "build": f"{build >> 16 & 255}.{build >> 8 & 255}.{build & 255}",
@@ -255,12 +259,13 @@ def cmd_describe(la, args):
 
 
 def check_description(la):
-    """The description registers against the ID and against the clocks the
-    device really gives. Nothing to check on a bitstream without them."""
+    """The description registers against the ID and against what this tool
+    knows of the gateware, with the clock left as it is. Gives the failures
+    and the description; nothing to check on a bitstream without one."""
     d = la.describe().get("description")
     if d is None:
         print("description: none")
-        return 0
+        return 0, None
     want = {
         "logic_channels": 0 if la.has_adc else la.channels,
         "analog_channels": 1 if la.has_adc else 0,
@@ -271,28 +276,28 @@ def check_description(la):
         "clock_at_start": 1,
     }
     fails = [f"{k} is {d[k]}, not {v}" for k, v in want.items() if d[k] != v]
-    if la.has_clocks:
-        # Each setting, asked for and read back from the ID.
-        for i, hz in enumerate(d["clocks_hz"]):
-            la.set_clock(hz // 1000000)
-            if la.clk_hz != hz or CLOCKS[i] * 1000000 != hz:
-                fails.append(f"clock setting {i} is {la.clk_hz} Hz, described as {hz}")
-        if len(d["clocks_hz"]) != len(CLOCKS):
-            fails.append(f"{len(d['clocks_hz'])} clocks described")
+    if la.has_clocks and d["clocks_hz"] != [mhz * 1000000 for mhz in CLOCKS]:
+        fails.append(f"clocks of {d['clocks_hz']} Hz, not {CLOCKS} MHz")
     for f in fails:
         print(f"  FAIL: description: {f}")
     print(f"description: build {d['build']}, clocks {d['clocks_hz']}" + ("" if fails else " ok"))
-    return len(fails)
+    return len(fails), d
 
 
 def cmd_selftest(la, args):
     """The self test at every clock the device has, or at the one given."""
     clocks = [args.clock] if args.clock else (CLOCKS if la.has_clocks else [None])
-    fails = check_description(la)
+    fails, desc = check_description(la)
     for mhz in clocks:
         if mhz:
             la.set_clock(mhz)
             print(f"--- {mhz} MHz")
+            # The clock the device is at now against the one it lists for
+            # this setting.
+            i = CLOCKS.index(mhz)
+            if desc and (i >= len(desc["clocks_hz"]) or desc["clocks_hz"][i] != la.clk_hz):
+                fails += 1
+                print(f"  FAIL: description: setting {i} is {la.clk_hz} Hz, not as listed")
         fails += selftest_once(la, args)
     print("selftest ok" if not fails else f"selftest FAILED ({fails})")
     return 1 if fails else 0
