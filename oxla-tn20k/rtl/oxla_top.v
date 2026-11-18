@@ -51,7 +51,8 @@ module oxla_top #(
     parameter W         = 16,
     parameter P         = 1,
     parameter RLE       = 0,
-    parameter ADC       = 0
+    parameter ADC       = 0,
+    parameter VERSION   = 0         // the release, a byte each for major, minor, patch
 ) (
     input  wire         clk27,
     input  wire [W-1:0] ch,
@@ -181,7 +182,7 @@ module oxla_top #(
 
     oxla_core #(
         .HOST_HZ(108000000), .BAUD(BAUD), .HOLD_BITS(19),
-        .W(W), .P(P), .RLE(RLE), .ADC(ADC)
+        .W(W), .P(P), .RLE(RLE), .ADC(ADC), .VERSION(VERSION)
     ) u_core (
         .hclk(hclk), .hrst(hrst), .clk(clk), .pll_lock(pll_lock), .clksel(clksel),
         .din(din),

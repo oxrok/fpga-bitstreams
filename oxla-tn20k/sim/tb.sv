@@ -66,7 +66,7 @@ module tb;
     wire [31:0] dq = ram_q_valid ? ram_q : 32'hdeadbeef;
 
     oxla_core #(.HOST_HZ(HOST_HZ), .BAUD(BAUD), .HOLD_BITS(8), .W(W), .P(P), .RLE(RLE),
-                .ADC(0), .INIT_US(5)) dut (
+                .ADC(0), .VERSION(32'h000203), .INIT_US(5)) dut (
         .hclk(hclk), .hrst(rst), .clk(clk), .pll_lock(1'b1), .clksel(clksel),
         .din(din), .rxd(rxd), .txd(txd),
         .adc_clk(adc_clk), .trig_out(trig_out), .led(led),
@@ -236,10 +236,26 @@ module tb;
             for (int i = 0; i < 16; i++) recv(id[i]);
             check(id[0] == "O" && id[1] == "X" && id[2] == "L" && id[3] == "A", "ID magic");
             check(id[4] == 1, "ID version");
-            check(id[5] == 8'(8 | (P > 1) << 1 | (RLE != 0)), "ID caps");
+            check(id[5] == 8'(24 | (P > 1) << 1 | (RLE != 0)), "ID caps");
             check(id[6] == W && id[7] == P, "ID geometry");
             check({id[11], id[10], id[9], id[8]} == 108000000, "ID clock");
             check({id[15], id[14], id[13], id[12]} == MEM, "ID memory");
+        end
+
+        // What the bitstream says it is.
+        begin
+            int unsigned d;
+            rreg(8'h90, d); check(d == 1, "DESC");
+            rreg(8'h91, d); check(d == 32'h000203, "BUILD");
+            rreg(8'h92, d); check(d == 32'h0103, "CLOCKS");
+            rreg(8'h93, d); check(d == W, "CHANNELS");
+            rreg(8'h94, d); check(d == 32'h007f1002, "TRIGGER");
+            rreg(8'h95, d); check(d == ((RLE != 0 ? 32 - W : 0) << 16 | 24 << 8), "LIMITS");
+            rreg(8'ha0, d); check(d == 81000000, "CLOCK_HZ 0");
+            rreg(8'ha1, d); check(d == 108000000, "CLOCK_HZ 1");
+            rreg(8'ha2, d); check(d == 135000000, "CLOCK_HZ 2");
+            rreg(8'ha3, d); check(d == 0, "CLOCK_HZ 3");
+            rreg(8'h96, d); check(d == 0, "a register there is none of");
         end
 
         // Change the clock. The link stays up; the capture side goes
