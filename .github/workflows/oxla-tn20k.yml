@@ -54,6 +54,8 @@ jobs:
       - run: .venv/bin/yowasp-yosys -V
       - run: make -j4 YOSYS=.venv/bin/yowasp-yosys
       - name: What nextpnr made of the timing
+        # bash, for pipefail: no such line in the logs is a failure.
+        shell: bash
         run: grep -H "Max frequency for clock" build/*/nextpnr.log | sort -u
       - name: Collect the bitstreams
         run: |
