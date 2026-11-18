@@ -30,6 +30,11 @@ SEED ?=
 # build that is no release. A change of it builds everything again.
 VERSION ?=
 ifneq ($(VERSION),)
+# One word: a second line, or anything after a space, is not looked at by
+# the check below.
+ifneq ($(words $(VERSION)),1)
+$(error VERSION is x.y.z, and nothing more)
+endif
 ifeq ($(shell echo "$(VERSION)" | awk -F. '/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$$/ && $$1 < 256 && $$2 < 256 && $$3 < 256 && $$1 + $$2 + $$3 > 0 { print "ok" }'),)
 $(error VERSION=$(VERSION): it is x.y.z, each from 0 to 255 and not all 0, a byte each in the register)
 endif
