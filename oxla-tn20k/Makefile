@@ -26,6 +26,11 @@ BAUD  ?= 3000000
 # Placement seed for nextpnr; empty for its default.
 SEED ?=
 
+# The release the bitstreams say they are (register 91), x.y.z; none for a
+# build that is no release. A change of it builds everything again.
+VERSION ?=
+VERNUM := $(shell echo "$(VERSION)" | awk -F. '{ print $$1 * 65536 + $$2 * 256 + $$3 }')
+
 # The capture clock is set at run time, up to this many MHz, and nextpnr
 # must meet it with MARGIN percent to spare or the build fails. Builds that passed its report with less have failed on the
 # board (150 MHz reported for a 135 MHz clock, for one); with 15% none has.
@@ -65,12 +70,13 @@ $(BUILD)/$(1)/oxla.cst: $(BOARD)/common.cst $(BOARD)/ch0-7.cst $(BOARD)/ch8-15.c
 	    $(if $(filter 1,$(5)),$(BOARD)/adc.cst) | awk -v w=$(2) \
 	    '{ if (match($$$$0, /ch\[[0-9]+\]/) && substr($$$$0, RSTART + 3, RLENGTH - 4) + 0 >= w) next; print }' > $$@
 
-$(BUILD)/$(1)/oxla.json: $(RTL) Makefile
+$(BUILD)/$(1)/oxla.json: $(RTL) Makefile $(BUILD)/version
 	@mkdir -p $(BUILD)/$(1)
 	$(YOSYS) -q -l $(BUILD)/$(1)/yosys.log -p "read_verilog -DSD_PSDA=\"$(SD_PSDA)\" -DSD_DUTY=\"$(SD_DUTY)\" \
 	    $(if $(filter 1,$(5)),-DOXLA_ADC) $(RTL); \
 	    hierarchy -top oxla_top -chparam BAUD $(BAUD) \
-	        -chparam W $(2) -chparam P $(3) -chparam RLE $(4) -chparam ADC $(5); \
+	        -chparam W $(2) -chparam P $(3) -chparam RLE $(4) -chparam ADC $(5) \
+	        -chparam VERSION $(VERNUM); \
 	    synth_gowin -top oxla_top -family gw2a -json $$@"
 
 $(BUILD)/$(1)/oxla_pnr.json: $(BUILD)/$(1)/oxla.json $(BUILD)/$(1)/oxla.cst
@@ -83,6 +89,10 @@ endef
 
 $(foreach v,$(VARIANTS),$(eval $(call variant,$(word 1,$(subst :, ,$(v))),$(word 2,$(subst :, ,$(v))),$(word 3,$(subst :, ,$(v))),$(word 4,$(subst :, ,$(v))),$(word 5,$(subst :, ,$(v))),$(word 6,$(subst :, ,$(v))))))
 
+$(BUILD)/version: FORCE
+	@mkdir -p $(BUILD)
+	@echo "$(VERNUM)" | cmp -s - $@ 2>/dev/null || echo "$(VERNUM)" > $@
+
 prog: $(BUILD)/$(V)/oxla.fs
 	$(LOADER) -b tangnano20k $<
 
@@ -91,8 +101,11 @@ flash: $(BUILD)/$(V)/oxla.fs
 
 # A release is the bitstreams that passed the self test on a board, and
 # only those: every variant is loaded and tested, and one failure stops it.
-# They go out as one archive (a .fs is 7 MB of text and packs to 80 kB),
-# under the names oxrok looks them up by.
+# Each gets a description beside it, NAME.fs.json, of what it answered on
+# the board (tools/sidecar.py, docs/SIDECAR.md): that is how oxrok knows
+# what a file is before it is loaded. They go out as one archive (a .fs is
+# 7 MB of text and packs to 80 kB), under the names oxrok looks them up by.
+# The first variant is the one a board gets when none is asked for.
 RELEASE = $(BUILD)/release
 TAG     = oxla-tn20k-v$(VERSION)
 PACKAGE = oxla-tn20k-$(VERSION).tar.gz
@@ -108,7 +121,10 @@ release: all
 	    $(PYTHON) tools/oxla.py $(PORT) id | head -1 | sed "s/^/$$v: /" | tee -a $(RELEASE)/TESTED && \
 	    { $(PYTHON) tools/oxla.py $(PORT) selftest > $(RELEASE)/$$v.log 2>&1; ok=$$?; \
 	      tail -1 $(RELEASE)/$$v.log; test $$ok = 0; } && \
-	    cp $(BUILD)/$$v/oxla.fs $(RELEASE)/oxla-tn20k-$$v.fs || \
+	    cp $(BUILD)/$$v/oxla.fs $(RELEASE)/oxla-tn20k-$$v.fs && \
+	    $(PYTHON) tools/sidecar.py --port $(PORT) --variant $$v --version $(VERSION) \
+	        --commit $$(git rev-parse HEAD) $$(test $$v = $(firstword $(NAMES)) && echo --default) \
+	        $(RELEASE)/oxla-tn20k-$$v.fs > $(RELEASE)/oxla-tn20k-$$v.fs.json || \
 	    { echo "$$v failed: $(RELEASE)/$$v.log"; exit 1; }; \
 	done
 	@{ echo "oxla-tn20k $(VERSION), commit $$(git rev-parse HEAD)"; \
@@ -119,14 +135,16 @@ release: all
 	   echo "135 MHz, loaded into the FPGA as it is here. What each said it was:"; \
 	   echo; cat $(RELEASE)/TESTED; } > $(RELEASE)/NOTES.txt
 	@rm $(RELEASE)/TESTED $(RELEASE)/*.log
-	cd $(RELEASE) && tar -czf $(PACKAGE) oxla-tn20k-*.fs && shasum -a 256 $(PACKAGE) oxla-tn20k-*.fs > SHA256SUMS
+	cd $(RELEASE) && tar -czf $(PACKAGE) oxla-tn20k-*.fs oxla-tn20k-*.fs.json && \
+	    shasum -a 256 $(PACKAGE) oxla-tn20k-*.fs oxla-tn20k-*.fs.json > SHA256SUMS
 	@echo "$(RELEASE)/$(PACKAGE): $(words $(NAMES)) bitstreams, all passed"
 
 publish:
 	@test -f $(RELEASE)/$(PACKAGE) || { echo "make release VERSION=$(VERSION) PORT=... first"; false; }
 	git tag $(TAG) $$(sed -n '1s/.*commit //p' $(RELEASE)/NOTES.txt)
 	git push origin $(TAG)
-	gh release create $(TAG) --title "oxla-tn20k $(VERSION)" --notes-file $(RELEASE)/NOTES.txt \
+	gh release create $(TAG) $(if $(PRERELEASE),--prerelease) \
+	    --title "oxla-tn20k $(VERSION)" --notes-file $(RELEASE)/NOTES.txt \
 	    $(RELEASE)/$(PACKAGE) $(RELEASE)/SHA256SUMS
 
 venv:
@@ -139,4 +157,4 @@ sim:
 clean:
 	rm -rf build sim/obj_dir
 
-.PHONY: all prog flash release publish venv sim clean $(NAMES)
+.PHONY: all prog flash release publish venv sim clean FORCE $(NAMES)

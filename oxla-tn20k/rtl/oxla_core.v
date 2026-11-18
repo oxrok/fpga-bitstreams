@@ -70,6 +70,7 @@ module oxla_core #(
     parameter P       = 1,          // samples per clock: 1 or 2
     parameter RLE     = 0,          // run length encoding available (P = 1)
     parameter ADC     = 0,          // the channels are a parallel ADC's data
+    parameter VERSION = 0,          // see oxla_host
     parameter INIT_US = 200
 ) (
     input  wire           hclk,         // host side: a fixed clock
@@ -220,7 +221,8 @@ module oxla_core #(
     wire [31:0] st_count  = {10'd0, wr_count};
 
     oxla_host #(.CLK_HZ(HOST_HZ), .BAUD(BAUD), .HOLD_BITS(HOLD_BITS),
-                .W(W), .P(P), .RLE(RLE), .ADC(ADC), .MEM_WORDS(MEM_WORDS)) u_host (
+                .W(W), .P(P), .RLE(RLE), .ADC(ADC), .MEM_WORDS(MEM_WORDS),
+                .VERSION(VERSION)) u_host (
         .clk(hclk), .rst(hrst), .rxd(rxd), .txd(txd),
         .clksel(clksel), .clk_hold(clk_hold),
         .cfg_div(cfg_div), .cfg_post_words(cfg_post_words),

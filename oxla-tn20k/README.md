@@ -133,6 +133,7 @@ Needs yosys (0.48 here), Verilator 5 for the simulation, openFPGALoader to
 program, uv for `make venv`.
 
     tools/oxla.py /dev/cu.usbserial-XXXX1 id
+    tools/oxla.py /dev/cu.usbserial-XXXX1 describe
     tools/oxla.py /dev/cu.usbserial-XXXX1 selftest
     tools/oxla.py /dev/cu.usbserial-XXXX1 capture --mode a-then-b --a 0=r --b 1=f,2=1
     tools/oxla.py --clock 135 /dev/cu.usbserial-XXXX1 capture --ddr
@@ -142,9 +143,12 @@ program, uv for `make venv`.
 Built bitstreams are on the repository's
 [releases](https://github.com/oxrok/fpga-bitstreams/releases), as
 `oxla-tn20k-VERSION.tar.gz`: the six variants, named
-`oxla-tn20k-la16-rle.fs` and so on, which is what oxrok looks for. Every
-file in a release was loaded into a board and passed the self test before
-it was packed; the release notes say with what it was built. oxrok's
+`oxla-tn20k-la16-rle.fs` and so on, each with a description beside it,
+`oxla-tn20k-la16-rle.fs.json` ([docs/SIDECAR.md](docs/SIDECAR.md)): what
+the bitstream is, what board and FPGA it is for, and what it answered on
+the board. Every file in a release was loaded into a board and passed the
+self test before it was packed; the release notes say with what it was
+built. oxrok's
 `oxla-tn20k` driver loads them into the board by itself, and
 `oxrok firmware fetch oxla-tn20k` downloads them for it.
 
@@ -152,8 +156,10 @@ it was packed; the release notes say with what it was built. oxrok's
     make publish VERSION=0.1.0
 
 The first builds every variant from a clean commit, loads each into the
-board and runs the self test on it, and stops at the first that fails. The
-second tags that commit and uploads the archive (needs `gh`).
+board, runs the self test on it and writes its description from what it
+answers, and stops at the first that fails. The second tags that commit
+and uploads the archive (needs `gh`; `PRERELEASE=1` marks it as one). The
+version is built into the bitstreams, which say it in a register.
 
 ## How it works
 
@@ -210,7 +216,7 @@ something on the header:
 ## What has been checked
 
 In simulation (`make sim`, against a behavioural SDRAM model that checks the
-command timing): ID, test pattern captures, the sample count limit, level
+command timing): ID, the registers that describe the bitstream, test pattern captures, the sample count limit, level
 and edge triggers, every trigger mode, the event count, the pre-trigger
 hold-off, STOP, RLE with a trigger, RLE on an idle line, RLE overflow, a
 capture long enough for the ring to wrap, and a change of clock, in seven

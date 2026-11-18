@@ -43,7 +43,7 @@ then are dropped. Wait for each answer before the next command.
 |---|---|
 | 0-3 | `OXLA` |
 | 4 | protocol version, 1 |
-| 5 | capabilities: bit 0 RLE, bit 1 two samples per clock, bit 2 the channels are an ADC, bit 3 the clock can be changed (register `08`) |
+| 5 | capabilities: bit 0 RLE, bit 1 two samples per clock, bit 2 the channels are an ADC, bit 3 the clock can be changed (register `08`), bit 4 the bitstream describes itself (registers from `90`) |
 | 6 | channels, W: 8, 14 or 16 |
 | 7 | samples per clock, P: 1 or 2 |
 | 8-11 | capture clock in Hz, as it is now |
@@ -81,6 +81,28 @@ a capture; the others are valid once it says done:
 | `82` | STOP | bits 20:0 the address after the last word written |
 | `83` | COUNT | words written, up to M where it stays |
 
+### What the bitstream is
+
+Where bit 4 of the ID's capabilities is set, these say the rest of what a
+host needs to know, so that it has to assume nothing from this document.
+They are constants and can be read at any time. A bitstream without the
+bit reads them as 0, as it does every register it has none of, and is what
+this document says: three clocks of 81, 108 and 135 MHz where bit 3 is
+set, the channels as logic unless bit 2 says they are an ADC's.
+
+| address | name | |
+|---|---|---|
+| `90` | DESC | the format of these registers, 1 |
+| `91` | BUILD | the release the bitstream is of: bits 23:16 major, 15:8 minor, 7:0 patch. 0 for a build that is none |
+| `92` | CLOCKS | bits 7:0 how many values CLOCK takes, from 0; bits 15:8 the one it has when the FPGA is configured |
+| `93` | CHANNELS | bits 7:0 logic channels; bits 15:8 analog channels; bits 23:16 bits of an analog sample. The W channels of the ID are the logic channels, or the analog ones, each of that many bits, lowest first |
+| `94` | TRIGGER | bits 7:0 terms; bits 15:8 bits of TCOUNT; bits 23:16 the values of TMODE there are, a bit each |
+| `95` | LIMITS | bits 7:0 the lowest DIV; bits 15:8 bits of DIV; bits 23:16 bits of the count in a run length encoded word, 0 without RLE |
+| `a0`-`a7` | CLOCK_HZ | the clock, in Hz, that CLOCK = 0 to 7 gives; 0 for a value there is none of |
+
+A later format adds registers and bits, and does not change these. A host
+that finds a format it does not know reads what it knows.
+
 The test pattern replaces the samples with a counter that goes up by one per
 sample, from 0 at ARM. The trigger sees it too, so a host can check memory,
 triggers and RLE with nothing connected. CHMASK does not apply to it.
@@ -94,8 +116,9 @@ lost, and the SDRAM is initialized again, which takes a few milliseconds.
 So: write CLOCK, read STATUS until bit 4 (SDRAM ready) is set, give it up
 after a second or two, then read the ID again for the clock in Hz.
 
-There are three settings, 0 to 2; the ID does not say so. A write of 3
-selects 108 MHz. CLOCK keeps its value through RESET, until it is written
+There are three settings, 0 to 2: CLOCKS says how many and CLOCK_HZ what
+each is, where the bitstream has those registers. A write of 3 selects
+108 MHz. CLOCK keeps its value through RESET, until it is written
 again or the FPGA is reconfigured, when it is 108 MHz. A write of the value
 it already has does all of the above too.
 

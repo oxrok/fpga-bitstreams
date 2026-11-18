@@ -2,6 +2,7 @@
 """Bring-up tool for the oxrok logic analyzer gateware (docs/PROTOCOL.md).
 
     oxla.py [--clock MHZ] PORT id
+    oxla.py PORT describe
     oxla.py [--clock MHZ] PORT selftest [--words N]
     oxla.py PORT capture [--div N] [--samples N] [--pre PERCENT] [--rle]
                          [--ddr] [--mode MODE] [--count N] [--a SPEC]
@@ -27,6 +28,8 @@ OP_RESET, OP_ID, OP_WREG, OP_RREG, OP_ARM, OP_STOP, OP_RMEM = 1, 2, 3, 4, 5, 6, 
 R_DIV, R_POST_WORDS, R_PRE_WORDS, R_POST_SAMPLES, R_FLAGS, R_CHMASK = 0, 1, 2, 3, 4, 5
 R_TMODE, R_TCOUNT, R_CLOCK, R_A, R_B = 6, 7, 8, 0x10, 0x18
 R_STATUS, R_TRIG, R_STOP, R_COUNT = 0x80, 0x81, 0x82, 0x83
+R_DESC, R_BUILD, R_CLOCKS, R_CHANNELS, R_TRIGGER, R_LIMITS, R_CLOCK_HZ = (
+    0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0xa0)
 
 F_RLE, F_DDR, F_TEST = 1, 2, 4
 ST_RUN, ST_TRIG, ST_DONE, ST_OVERFLOW, ST_READY = 1, 2, 4, 8, 16
@@ -56,6 +59,7 @@ class Oxla:
         self.mem_words, = struct.unpack_from("<I", d, 12)
         self.has_rle, self.has_ddr, self.has_adc = bool(caps & 1), bool(caps & 2), bool(caps & 4)
         self.has_clocks = bool(caps & 8)
+        self.caps, self.has_desc = caps, bool(caps & 16)
         # Samples repeat their position in the words every `group` words
         # (1 unless the channel count does not divide 32).
         g = 1
@@ -75,6 +79,41 @@ class Oxla:
     def rreg(self, addr):
         self.ser.write(bytes([OP_RREG, addr]))
         return struct.unpack("<I", self._read(4))[0]
+
+    def variant(self):
+        """The name of this bitstream in the build, from its ID: la8-ddr."""
+        return (f"la{self.channels}" + ("-ddr" if self.has_ddr and self.spc == 2 else "")
+                + ("-rle" if self.has_rle else "") + ("-adc" if self.has_adc else ""))
+
+    def describe(self):
+        """What the bitstream says it is: its ID and, where it has them, its
+        description registers. The ID's clock is the one it is at now."""
+        d = {"protocol": self.version, "caps": self.caps, "channels": self.channels,
+             "samples_per_clock": self.spc, "clock_hz": self.clk_hz,
+             "mem_words": self.mem_words}
+        if not self.has_desc:
+            return d
+        fmt = self.rreg(R_DESC)
+        if fmt != 1:
+            raise RuntimeError(f"description format {fmt}: this tool knows 1")
+        build, clocks, channels = self.rreg(R_BUILD), self.rreg(R_CLOCKS), self.rreg(R_CHANNELS)
+        trigger, limits = self.rreg(R_TRIGGER), self.rreg(R_LIMITS)
+        d["description"] = {
+            "format": fmt,
+            "build": f"{build >> 16 & 255}.{build >> 8 & 255}.{build & 255}",
+            "clocks_hz": [self.rreg(R_CLOCK_HZ + i) for i in range(clocks & 255)],
+            "clock_at_start": clocks >> 8 & 255,
+            "logic_channels": channels & 255,
+            "analog_channels": channels >> 8 & 255,
+            "analog_bits": channels >> 16 & 255,
+            "trigger_terms": trigger & 255,
+            "trigger_count_bits": trigger >> 8 & 255,
+            "trigger_modes": [m for m in range(8) if trigger >> 16 >> m & 1],
+            "div_min": limits & 255,
+            "div_bits": limits >> 8 & 255,
+            "rle_count_bits": limits >> 16 & 255,
+        }
+        return d
 
     def set_clock(self, mhz):
         """Change the capture clock (81, 108 or 135 MHz). Everything else
@@ -210,10 +249,46 @@ def cmd_id(la, args):
     print(f"status {la.rreg(R_STATUS):#x}")
 
 
+def cmd_describe(la, args):
+    import json
+    print(json.dumps({"variant": la.variant(), **la.describe()}, indent=2))
+
+
+def check_description(la):
+    """The description registers against the ID and against the clocks the
+    device really gives. Nothing to check on a bitstream without them."""
+    d = la.describe().get("description")
+    if d is None:
+        print("description: none")
+        return 0
+    want = {
+        "logic_channels": 0 if la.has_adc else la.channels,
+        "analog_channels": 1 if la.has_adc else 0,
+        "analog_bits": la.channels if la.has_adc else 0,
+        "trigger_terms": 2, "trigger_count_bits": 16, "trigger_modes": list(range(len(MODES))),
+        "div_min": 1 if la.has_adc else 0, "div_bits": 24,
+        "rle_count_bits": 32 - la.channels if la.has_rle else 0,
+        "clock_at_start": 1,
+    }
+    fails = [f"{k} is {d[k]}, not {v}" for k, v in want.items() if d[k] != v]
+    if la.has_clocks:
+        # Each setting, asked for and read back from the ID.
+        for i, hz in enumerate(d["clocks_hz"]):
+            la.set_clock(hz // 1000000)
+            if la.clk_hz != hz or CLOCKS[i] * 1000000 != hz:
+                fails.append(f"clock setting {i} is {la.clk_hz} Hz, described as {hz}")
+        if len(d["clocks_hz"]) != len(CLOCKS):
+            fails.append(f"{len(d['clocks_hz'])} clocks described")
+    for f in fails:
+        print(f"  FAIL: description: {f}")
+    print(f"description: build {d['build']}, clocks {d['clocks_hz']}" + ("" if fails else " ok"))
+    return len(fails)
+
+
 def cmd_selftest(la, args):
     """The self test at every clock the device has, or at the one given."""
     clocks = [args.clock] if args.clock else (CLOCKS if la.has_clocks else [None])
-    fails = 0
+    fails = check_description(la)
     for mhz in clocks:
         if mhz:
             la.set_clock(mhz)
@@ -389,6 +464,7 @@ def main():
                    help="capture clock in MHz (stays set); selftest tries all without it")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("id")
+    sub.add_parser("describe")
     s = sub.add_parser("selftest")
     s.add_argument("--words", type=int, default=100000)
     c = sub.add_parser("capture")
@@ -407,7 +483,8 @@ def main():
     la = Oxla(args.port, args.baud)
     if args.clock and args.cmd != "selftest":
         la.set_clock(args.clock)
-    return {"id": cmd_id, "selftest": cmd_selftest, "capture": cmd_capture}[args.cmd](la, args)
+    return {"id": cmd_id, "describe": cmd_describe, "selftest": cmd_selftest,
+            "capture": cmd_capture}[args.cmd](la, args)
 
 
 if __name__ == "__main__":
