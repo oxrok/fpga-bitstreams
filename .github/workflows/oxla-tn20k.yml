@@ -1,0 +1,68 @@
+name: oxla-tn20k
+
+# The simulation, and a build of every variant. A build here says the
+# sources synthesize and meet the timing margin; its bitstreams have not
+# run on a board, and a release is only what `make release` tested on one.
+
+on:
+  pull_request:
+    paths:
+      - "oxla-tn20k/**"
+      - ".github/workflows/oxla-tn20k.yml"
+  push:
+    branches: [main]
+    paths:
+      - "oxla-tn20k/**"
+      - ".github/workflows/oxla-tn20k.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: oxla-tn20k
+
+jobs:
+  sim:
+    name: simulation
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends verilator g++ make
+      - run: verilator --version
+      - run: make sim
+      - name: The tools parse
+        run: python3 -m py_compile tools/oxla.py tools/sidecar.py
+
+  build:
+    name: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - run: make venv
+      # yosys as the YoWASP build too: no distribution package to go stale.
+      - run: uv pip install --python .venv/bin/python yowasp-yosys
+      - run: .venv/bin/yowasp-yosys -V
+      - run: make -j4 YOSYS=.venv/bin/yowasp-yosys
+      - name: What nextpnr made of the timing
+        # bash, for pipefail: no such line in the logs is a failure.
+        shell: bash
+        run: grep -H "Max frequency for clock" build/*/nextpnr.log | sort -u
+      - name: Collect the bitstreams
+        run: |
+          mkdir untested
+          for d in build/la*; do cp "$d/oxla.fs" "untested/oxla-tn20k-$(basename "$d").fs"; done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oxla-tn20k-untested-${{ github.sha }}
+          path: oxla-tn20k/untested/*.fs
+          retention-days: 14

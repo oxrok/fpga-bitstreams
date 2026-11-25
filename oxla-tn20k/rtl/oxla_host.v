@@ -54,7 +54,8 @@ module oxla_host #(
     parameter P      = 1,
     parameter RLE    = 0,
     parameter ADC    = 0,
-    parameter MEM_WORDS = 1 << 21
+    parameter MEM_WORDS = 1 << 21,
+    parameter VERSION = 0           // of the release: major, minor, patch, a byte each; 0 for none
 ) (
     input  wire         clk,
     input  wire         rst,
@@ -99,8 +100,9 @@ module oxla_host #(
                      OP_WREG = 8'h03, OP_RREG = 8'h04, OP_ARM = 8'h05,
                      OP_STOP = 8'h06, OP_RMEM = 8'h07;
 
-    // Bit 3: the clock can be changed (register 08).
-    wire [7:0] caps = {4'd0, 1'b1, ADC != 0, P > 1, RLE != 0};
+    // Bit 3: the clock can be changed (register 08). Bit 4: the registers
+    // from 90 describe the bitstream.
+    wire [7:0] caps = {3'd0, 1'b1, 1'b1, ADC != 0, P > 1, RLE != 0};
     wire [7:0] w8 = W;
     wire [7:0] p8 = P;
 
@@ -156,6 +158,19 @@ module oxla_host #(
             8'h81:   r_val = st_trig;
             8'h82:   r_val = st_stop;
             8'h83:   r_val = st_count;
+            // What this bitstream is, for a host that assumes nothing:
+            // constants, all of them.
+            8'h90:   r_val = 32'd1;                         // DESC: the format of these
+            8'h91:   r_val = VERSION;                       // BUILD
+            8'h92:   r_val = {16'd0, 8'd1, 8'd3};           // CLOCKS: three settings, 1 at first
+            8'h93:   r_val = (ADC != 0) ? {8'd0, w8, 8'd1, 8'd0}    // CHANNELS: one analog, W bits
+                                        : {8'd0, 8'd0, 8'd0, w8};   // or W logic
+            8'h94:   r_val = {8'd0, 8'h7f, 8'd16, 8'd2};    // TRIGGER: 2 terms, TCOUNT 16 bits, TMODE 0 to 6
+            8'h95:   r_val = {8'd0, (RLE != 0) ? 8'd32 - w8 : 8'd0, 8'd24,
+                              (ADC != 0) ? 8'd1 : 8'd0};    // LIMITS: lowest DIV, its bits, bits of a run's count
+            8'ha0:   r_val = 32'd81000000;                  // CLOCK_HZ of setting 0, 1, 2
+            8'ha1:   r_val = 32'd108000000;
+            8'ha2:   r_val = 32'd135000000;
             default: r_val = 32'd0;
         endcase
     end
